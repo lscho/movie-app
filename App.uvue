@@ -1,0 +1,217 @@
+<script setup lang="uts">
+	// #ifdef APP-ANDROID || APP-HARMONY
+	let firstBackTime = 0
+	// #endif
+
+	onLaunch(() => {
+		console.log('App Launch')
+	})
+
+	// #ifdef APP-ANDROID || APP-HARMONY
+	onLastPageBackPress(() => {
+		if (firstBackTime == 0) {
+			uni.showToast({
+				title: '再按一次退出应用',
+				position: 'bottom',
+			})
+			firstBackTime = Date.now()
+			setTimeout(() => {
+				firstBackTime = 0
+			}, 2000)
+		} else if (Date.now() - firstBackTime < 2000) {
+			firstBackTime = Date.now()
+			uni.exit()
+		}
+	})
+	// #endif
+</script>
+
+<style>
+	/* 全局公共样式：蒸汽模式仅支持简单class/分组选择器，统一BEM命名
+	   单位统一用 rpx：手机(375-430px宽)与TV横屏(最宽960px计算)均按基准自适应 */
+
+	.page {
+		flex: 1;
+		background-color: #12141a;
+	}
+
+	.row {
+		flex-direction: row;
+		align-items: center;
+	}
+
+	.wrap {
+		flex-direction: row;
+		flex-wrap: wrap;
+	}
+
+	.flex1 {
+		flex: 1;
+	}
+
+	.t-title {
+		color: #ffffff;
+		font-size: 36rpx;
+		font-weight: bold;
+	}
+
+	.t-main {
+		color: #e8eaee;
+		font-size: 30rpx;
+	}
+
+	.t-sub {
+		color: #9aa0ab;
+		font-size: 26rpx;
+	}
+
+	.t-dim {
+		color: #6b7280;
+		font-size: 24rpx;
+	}
+
+	.t-accent {
+		color: #3d9bff;
+		font-size: 26rpx;
+	}
+
+	.t-white {
+		color: #ffffff;
+		font-size: 28rpx;
+	}
+
+	.tag {
+		padding: 4rpx 16rpx;
+		border-radius: 8rpx;
+		background-color: #262b36;
+		color: #9aa0ab;
+		font-size: 22rpx;
+	}
+
+	.tag-accent {
+		padding: 4rpx 16rpx;
+		border-radius: 8rpx;
+		background-color: #16304f;
+		color: #3d9bff;
+		font-size: 22rpx;
+	}
+
+	.card {
+		background-color: #1e222b;
+		border-radius: 20rpx;
+		padding: 24rpx;
+	}
+
+	.divider {
+		height: 1px;
+		background-color: #262b36;
+	}
+
+	.btn-primary {
+		background-color: #3d9bff;
+		border-radius: 16rpx;
+		padding: 20rpx 0;
+		align-items: center;
+		justify-content: center;
+	}
+
+	.btn-ghost {
+		background-color: #262b36;
+		border-radius: 16rpx;
+		padding: 20rpx 0;
+		align-items: center;
+		justify-content: center;
+	}
+
+	.chip {
+		background-color: #262b36;
+		border-radius: 28rpx;
+		padding: 12rpx 28rpx;
+		margin: 0 16rpx 16rpx 0;
+	}
+
+	.chip-active {
+		background-color: #16304f;
+		border-radius: 28rpx;
+		padding: 12rpx 28rpx;
+		margin: 0 16rpx 16rpx 0;
+	}
+
+	/* 可聚焦元素的焦点态：TV端D-pad移动焦点时通过hover-class高亮 */
+	.focusable {
+		border-radius: 16rpx;
+	}
+
+	.focusable-hover {
+		background-color: #16304f;
+		opacity: 0.9;
+	}
+
+	.chip-hover {
+		background-color: #16304f;
+	}
+
+	.btn-primary-hover {
+		background-color: #6ab2ff;
+	}
+
+	.btn-ghost-hover {
+		background-color: #33405a;
+	}
+
+	.search-item-hover {
+		background-color: #26304a;
+	}
+
+	.ep-hover {
+		background-color: #33405a;
+	}
+
+	/* 选集网格：4列等宽均分 */
+	.ep-grid {
+		flex-direction: row;
+		flex-wrap: wrap;
+		justify-content: space-between;
+	}
+
+	.ep-grid-item,
+	.ep-grid-item-active {
+		width: 23.5%;
+		height: 76rpx;
+		border-radius: 16rpx;
+		align-items: center;
+		justify-content: center;
+		padding: 0 8rpx;
+		margin-bottom: 20rpx;
+	}
+
+	.ep-grid-item {
+		background-color: #262b36;
+	}
+
+	.ep-grid-item-active {
+		background-color: #3d9bff;
+	}
+
+	.ep-grid-text,
+	.ep-grid-text-active {
+		font-size: 26rpx;
+		lines: 1;
+		text-overflow: ellipsis;
+	}
+
+	.ep-grid-text {
+		color: #9aa0ab;
+	}
+
+	.ep-grid-text-active {
+		color: #ffffff;
+		font-weight: bold;
+	}
+
+	/* 状态栏占位（自定义导航页用，高度由页面注入 statusBarH） */
+	.status-bar {
+		height: 44px;
+		background-color: #12141a;
+	}
+</style>

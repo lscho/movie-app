@@ -1,0 +1,111 @@
+// 数据模型定义（uni-app x / UTS）
+
+// 单集
+export class Episode {
+	name : string = ""
+	url : string = ""
+	constructor(name : string = "", url : string = "") {
+		this.name = name
+		this.url = url
+	}
+}
+
+// 某资源站下的一个播放线路（对应 vod_play_from 的一段）
+export class PlaySource {
+	flag : string = ""            // 线路标识，如 360zy / ffm3u8
+	label : string = ""           // 展示名
+	episodes : Array<Episode> = new Array<Episode>()
+	constructor(flag : string = "", label : string = "") {
+		this.flag = flag
+		this.label = label
+	}
+}
+
+// 影片条目
+export class VodItem {
+	vodId : string = ""
+	sourceId : string = ""        // 资源站 id
+	sourceName : string = ""      // 资源站名
+	sourceApi : string = ""       // 资源站 api 基址
+	name : string = ""
+	pic : string = ""
+	remark : string = ""          // 备注，如 "已完结"
+	typeName : string = ""        // 分类，如 "欧美剧"
+	year : string = ""
+	area : string = ""
+	actor : string = ""
+	director : string = ""
+	content : string = ""         // 简介
+	sources : Array<PlaySource> = new Array<PlaySource>()
+	hasPlay : boolean = false     // 搜索结果里是否已带播放数据
+
+	constructor() { }
+}
+
+// 资源站（苹果CMS标准接口）
+export class SourceApi {
+	id : string = ""
+	name : string = ""
+	api : string = ""             // 形如 https://360zy.com/api.php/provide/vod
+	enabled : boolean = true
+	constructor(id : string = "", name : string = "", api : string = "", enabled : boolean = true) {
+		this.id = id
+		this.name = name
+		this.api = api
+		this.enabled = enabled
+	}
+}
+
+// 解析接口（web-view 加载，前缀拼接目标地址）
+export class ParseApi {
+	id : string = ""
+	name : string = ""
+	url : string = ""             // 前缀，如 https://z1.m1907.top/?jx=
+	enabled : boolean = true
+	constructor(id : string = "", name : string = "", url : string = "", enabled : boolean = true) {
+		this.id = id
+		this.name = name
+		this.url = url
+		this.enabled = enabled
+	}
+}
+
+// 播放历史条目
+export class HistoryItem {
+	key : string = ""             // vodKey = sourceApi|vodId
+	vodId : string = ""
+	sourceApi : string = ""
+	name : string = ""
+	pic : string = ""
+	episodeIndex : number = 0
+	episodeName : string = ""
+	episodeUrl : string = ""      // m3u8 或 解析目标
+	flag : string = ""            // 线路标识
+	playMode : string = "vod"     // vod=直链播放 parse=解析播放
+	updateTime : number = 0
+	constructor() { }
+}
+
+// 收藏条目
+export class FavoriteItem {
+	key : string = ""
+	vodId : string = ""
+	sourceApi : string = ""
+	name : string = ""
+	pic : string = ""
+	remark : string = ""
+	updateTime : number = 0
+	constructor() { }
+}
+
+// 播放进度
+export class ProgressItem {
+	position : number = 0         // 已播秒数
+	duration : number = 0         // 总时长秒数
+	updateTime : number = 0
+	constructor(position : number = 0, duration : number = 0) {
+		this.position = position
+		this.duration = duration
+		this.updateTime = Date.now()
+	}
+}

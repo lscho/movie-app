@@ -1,0 +1,296 @@
+<template>
+	<view class="parse-page">
+		<!-- 状态栏占位 + 顶栏 -->
+		<view class="status-bar" :style="{ height: statusBarH + 'px' }"></view>
+		<view class="parse-topbar row">
+			<view class="parse-back" hover-class="focusable-hover" @click="goBack">
+				<text class="parse-back-icon">‹</text>
+			</view>
+			<view class="flex1 parse-title-box">
+				<text class="t-white parse-title">{{titleText}}</text>
+			</view>
+			<view class="parse-switch" hover-class="chip-hover" @click="switchApi">
+				<text class="t-accent">换接口</text>
+			</view>
+		</view>
+
+		<!-- 接口选择抽屉 -->
+		<view class="parse-drawer" v-if="showPicker">
+			<view class="parse-drawer-mask" @click="showPicker = false"></view>
+			<view class="parse-drawer-panel card">
+				<text class="t-main">选择解析接口</text>
+				<view class="parse-drawer-list">
+					<view :class="apiIdx == i ? 'chip-active' : 'chip'" v-for="(p, i) in parses" :key="i"
+						hover-class="chip-hover" @click="pickApi(i)">
+						<text :class="apiIdx == i ? 't-accent' : 't-sub'">{{p.name}}</text>
+					</view>
+				</view>
+				<text class="t-dim parse-drawer-tip">提示：解析接口由第三方提供，失效属正常现象，换接口重试即可</text>
+			</view>
+		</view>
+
+		<!-- 输入区（无 url 参数时显示） -->
+		<view class="parse-input-area" v-if="!playing && !loading">
+			<view class="card">
+				<text class="t-main">粘贴VIP视频链接</text>
+				<input class="parse-input" v-model="urlInput" placeholder="支持腾讯/爱奇艺/优酷/芒果TV等"
+					placeholder-style="color:#6b7280" />
+				<view class="btn-primary parse-go" @click="startParse">
+					<text class="t-white">Go-解析播放</text>
+				</view>
+				<view class="row parse-quick">
+					<text class="t-dim flex1">当前接口：{{parses.length > 0 ? parses[apiIdx].name : '无'}}</text>
+					<text class="t-accent" @click="showPicker = true">切换</text>
+				</view>
+			</view>
+			<view class="parse-warn">
+				<text class="t-dim">解析服务由第三方接口提供，页面内出现的广告与本应用无关，请勿在网页内输入任何账号密码或支付信息。</text>
+			</view>
+		</view>
+
+		<!-- 加载中 -->
+		<view class="parse-loading" v-if="loading && !playing">
+			<text class="t-sub">正在请求解析接口…</text>
+			<text class="t-dim parse-loading-tip">若长时间无响应请换接口重试</text>
+		</view>
+
+		<!-- web-view 播放区 -->
+		<web-view v-if="playing" id="parse-webview" class="parse-webview" :src="webUrl"
+			@error="onWebError" @load="onWebLoad">
+		</web-view>
+	</view>
+</template>
+
+<script setup lang="uts">
+	import { ParseApi } from '../../types/model.uts'
+	import { HistoryItem } from '../../types/model.uts'
+	import { enabledParses, pushHistory } from '../../api/store.uts'
+
+	const parses = ref<Array<ParseApi>>(new Array<ParseApi>())
+	const apiIdx = ref(0)
+	const urlInput = ref('')
+	const webUrl = ref('')
+	const playing = ref(false)
+	const loading = ref(false)
+	const showPicker = ref(false)
+	const titleText = ref('解析播放')
+	let targetUrl = ''
+	let vodName = ''
+	const statusBarH = ref(44)
+
+	onLoad((options : OnLoadOptions) => {
+		parses.value = enabledParses()
+		targetUrl = decodeURIComponent(options['url'] ?? '')
+		vodName = decodeURIComponent(options['name'] ?? '')
+		statusBarH.value = uni.getWindowInfo().statusBarHeight
+		if (targetUrl.length > 0) {
+			urlInput.value = targetUrl
+			if (vodName.length > 0) titleText.value = vodName
+			setTimeout(() => {
+				startParse()
+			}, 100)
+		} else if (parses.value.length == 0) {
+			uni.showToast({ title: '无可用解析接口，请在我的-接口管理开启', icon: 'none' })
+		}
+	})
+
+	const startParse = () => {
+		const u = urlInput.value.trim()
+		if (u.length == 0) {
+			uni.showToast({ title: '请输入视频链接', icon: 'none' })
+			return
+		}
+		if (parses.value.length == 0) {
+			uni.showToast({ title: '无可用解析接口', icon: 'none' })
+			return
+		}
+		targetUrl = u
+		loading.value = true
+		playing.value = false
+		// 解析接口前缀 + 目标链接
+		const api = parses.value[apiIdx.value]
+		webUrl.value = `${api.url}${encodeURIComponent(u)}`
+		// 给解析页 3.5 秒加载时间后铺开 web-view
+		setTimeout(() => {
+			if (loading.value) {
+				loading.value = false
+				playing.value = true
+				recordHistory()
+			}
+		}, 3500)
+	}
+
+	const recordHistory = () => {
+		if (vodName.length == 0) vodName = 'VIP解析'
+		const item = new HistoryItem()
+		item.key = `parse|${targetUrl}`
+		item.vodId = targetUrl
+		item.sourceApi = parses.value[apiIdx.value].url
+		item.name = vodName
+		item.pic = ''
+		item.episodeIndex = 0
+		item.episodeName = '解析播放'
+		item.episodeUrl = targetUrl
+		item.flag = parses.value[apiIdx.value].name
+		item.playMode = 'parse'
+		item.updateTime = Date.now()
+		pushHistory(item)
+	}
+
+	const pickApi = (i : number) => {
+		apiIdx.value = i
+		showPicker.value = false
+		if (targetUrl.length > 0) {
+			// 换接口立即重新解析
+			playing.value = false
+			loading.value = true
+			const api = parses.value[apiIdx.value]
+			webUrl.value = `${api.url}${encodeURIComponent(targetUrl)}`
+			setTimeout(() => {
+				if (loading.value) {
+					loading.value = false
+					playing.value = true
+				}
+			}, 3500)
+		}
+	}
+
+	const switchApi = () => {
+		showPicker.value = true
+	}
+
+	const onWebError = (_ : UniWebViewErrorEvent) => {
+		uni.showToast({ title: '接口加载失败，请换接口重试', icon: 'none' })
+	}
+
+	const onWebLoad = (_ : UniWebViewLoadEvent) => {
+		loading.value = false
+	}
+
+	const goBack = () => {
+		uni.navigateBack()
+	}
+</script>
+
+<style>
+	.parse-page {
+		flex: 1;
+		background-color: #0d0f14;
+	}
+
+	.parse-topbar {
+		height: 104rpx;
+		padding: 0 24rpx;
+		background-color: #12141a;
+	}
+
+	.parse-back {
+		width: 128rpx;
+		height: 72rpx;
+		border-radius: 36rpx;
+		background-color: #262b36;
+		align-items: center;
+		justify-content: center;
+	}
+
+	.parse-back-icon {
+		color: #ffffff;
+		font-size: 52rpx;
+		line-height: 72rpx;
+		margin-top: -8rpx;
+	}
+
+	.parse-title-box {
+		flex-direction: column;
+		align-items: center;
+		justify-content: center;
+	}
+
+	.parse-title {
+		font-size: 30rpx;
+		lines: 1;
+		text-overflow: ellipsis;
+	}
+
+	.parse-switch {
+		width: 128rpx;
+		height: 72rpx;
+		border-radius: 36rpx;
+		background-color: #16304f;
+		align-items: center;
+		justify-content: center;
+	}
+
+	.parse-input-area {
+		flex: 1;
+		padding: 32rpx;
+	}
+
+	.parse-input {
+		margin-top: 24rpx;
+		height: 84rpx;
+		background-color: #262b36;
+		border-radius: 16rpx;
+		padding: 0 24rpx;
+		font-size: 28rpx;
+		color: #ffffff;
+	}
+
+	.parse-go {
+		margin-top: 28rpx;
+		height: 84rpx;
+	}
+
+	.parse-quick {
+		margin-top: 24rpx;
+	}
+
+	.parse-warn {
+		margin-top: 28rpx;
+	}
+
+	.parse-loading {
+		flex: 1;
+		padding: 160rpx 64rpx;
+		align-items: center;
+	}
+
+	.parse-loading-tip {
+		margin-top: 16rpx;
+	}
+
+	.parse-webview {
+		flex: 1;
+		background-color: #000000;
+	}
+
+	.parse-drawer {
+		position: absolute;
+		top: 0;
+		left: 0;
+		right: 0;
+		bottom: 0;
+	}
+
+	.parse-drawer-mask {
+		flex: 1;
+		background-color: rgba(0, 0, 0, 0.6);
+	}
+
+	.parse-drawer-panel {
+		position: absolute;
+		left: 48rpx;
+		right: 48rpx;
+		bottom: 120rpx;
+	}
+
+	.parse-drawer-list {
+		flex-direction: row;
+		flex-wrap: wrap;
+		margin-top: 24rpx;
+	}
+
+	.parse-drawer-tip {
+		margin-top: 20rpx;
+	}
+</style>

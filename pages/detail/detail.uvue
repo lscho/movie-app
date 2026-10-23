@@ -1,0 +1,285 @@
+<template>
+	<view class="page">
+		<scroll-view class="detail-scroll" direction="vertical">
+			<!-- 加载中 -->
+			<view class="detail-loading" v-if="loading">
+				<text class="t-sub">加载中…</text>
+			</view>
+			<view class="detail-loading" v-if="!loading && loadError.length > 0">
+				<text class="t-sub">{{loadError}}</text>
+				<view class="btn-ghost detail-retry" hover-class="btn-ghost-hover" @click="loadDetail">
+					<text class="t-accent">重试</text>
+				</view>
+			</view>
+
+			<view class="detail-body" v-if="!loading && vod != null">
+				<!-- 头部信息 -->
+				<view class="detail-head row">
+					<image class="detail-pic" :src="vod!.pic" mode="aspectFill" v-if="vod!.pic.length > 0"></image>
+					<view class="detail-pic detail-pic-empty" v-else>
+						<text class="t-dim">无图</text>
+					</view>
+					<view class="detail-head-info flex1">
+						<text class="t-title">{{vod!.name}}</text>
+						<view class="row detail-head-tags">
+							<text class="tag-accent detail-head-tag" v-if="vod!.remark.length > 0">{{vod!.remark}}</text>
+							<text class="tag detail-head-tag" v-if="vod!.typeName.length > 0">{{vod!.typeName}}</text>
+							<text class="tag detail-head-tag" v-if="vod!.year.length > 0">{{vod!.year}}</text>
+							<text class="tag detail-head-tag" v-if="vod!.area.length > 0">{{vod!.area}}</text>
+						</view>
+						<text class="t-sub detail-line" v-if="vod!.director.length > 0">导演：{{vod!.director}}</text>
+						<text class="t-sub detail-line" v-if="vod!.actor.length > 0" :user-interaction-select="false">主演：{{vod!.actor}}</text>
+					</view>
+				</view>
+
+				<!-- 操作按钮 -->
+				<view class="detail-actions row">
+					<view class="btn-primary detail-play-btn" hover-class="btn-primary-hover" @click="playFirst">
+						<text class="t-white">立即播放</text>
+					</view>
+					<view class="btn-ghost detail-fav-btn" hover-class="btn-ghost-hover" @click="toggleFav">
+						<text :class="fav ? 't-accent' : 't-sub'">{{fav ? '已收藏' : '收藏'}}</text>
+					</view>
+				</view>
+
+				<!-- 简介 -->
+				<view class="card detail-intro" v-if="vod!.content.length > 0">
+					<text class="t-main">简介</text>
+					<text class="t-sub detail-intro-text">{{introText}}</text>
+					<text class="t-accent" v-if="vod!.content.length > 120" @click="introExpanded = !introExpanded">
+						{{introExpanded ? '收起' : '展开'}}
+					</text>
+				</view>
+
+				<!-- 线路选择 -->
+				<view class="detail-sources" v-if="vod!.sources.length > 1">
+					<text class="t-main detail-sec-title">播放线路</text>
+					<view class="wrap">
+						<view :class="srcIdx == i ? 'chip-active' : 'chip'" v-for="(s, i) in vod!.sources" :key="i"
+							hover-class="chip-hover" @click="switchSource(i)">
+							<text :class="srcIdx == i ? 't-accent' : 't-sub'">{{s.label}}（{{s.episodes.length}}集）</text>
+						</view>
+					</view>
+				</view>
+
+				<!-- 剧集 -->
+				<view class="detail-episodes" v-if="curEpisodes.length > 0">
+					<text class="t-main detail-sec-title">选集（{{curEpisodes.length}}集）</text>
+					<view class="ep-grid">
+						<view :class="i == curEpIndex ? 'ep-grid-item-active' : 'ep-grid-item'"
+							v-for="(ep, i) in curEpisodes" :key="i" @click="playEp(i)" hover-class="ep-hover">
+							<text :class="i == curEpIndex ? 'ep-grid-text-active' : 'ep-grid-text'">{{ep.name}}</text>
+						</view>
+					</view>
+				</view>
+			</view>
+		</scroll-view>
+	</view>
+</template>
+
+<script setup lang="uts">
+	import { VodItem, FavoriteItem, Episode } from '../../types/model.uts'
+	import { fetchVod } from '../../api/vod.uts'
+	import { isFavorite, toggleFavorite, getProgress, getHistory } from '../../api/store.uts'
+
+	const vod = ref<VodItem | null>(null)
+	const loading = ref(true)
+	const loadError = ref('')
+	const srcIdx = ref(0)
+	const fav = ref(false)
+	const introExpanded = ref(false)
+	let apiBase = ''
+	let vodId = ''
+	let vodKey = ''
+
+	const curEpisodes = computed((): Array<Episode> => {
+		const v = vod.value
+		if (v == null) return new Array<Episode>()
+		if (srcIdx.value >= v.sources.length) return new Array<Episode>()
+		return v.sources[srcIdx.value].episodes
+	})
+
+	const curEpIndex = ref(-1)
+
+	const introText = computed((): string => {
+		const v = vod.value
+		if (v == null) return ''
+		let c = v.content.replace(/<[^>]+>/g, ' ')
+		c = c.replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<')
+			.replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'")
+		c = c.trim()
+		if (introExpanded.value || c.length <= 120) return c
+		return c.substring(0, 120) + '…'
+	})
+
+	onLoad((options : OnLoadOptions) => {
+		apiBase = decodeURIComponent(options['api'] ?? '')
+		vodId = options['id'] ?? ''
+		vodKey = `${apiBase}|${vodId}`
+		fav.value = isFavorite(vodKey)
+		loadDetail()
+	})
+
+	const loadDetail = () => {
+		loading.value = true
+		loadError.value = ''
+		fetchVod(apiBase, `ids=${vodId}`, true, (res) => {
+			loading.value = false
+			if (res.code != 0 || res.list.length == 0) {
+				loadError.value = res.msg.length > 0 ? `加载失败：${res.msg}` : '未找到该影片'
+				return
+			}
+			vod.value = res.list[0]
+			srcIdx.value = 0
+			// 高亮历史记录里上次看的集
+			curEpIndex.value = findLastEpisodeIndex()
+			checkResume()
+		})
+	}
+
+	// 从历史记录找上次观看的集索引（仅同源匹配）
+	const findLastEpisodeIndex = () : number => {
+		const arr = getHistory()
+		for (let i = 0; i < arr.length; i++) {
+			const h = arr[i]
+			if (h.key == vodKey && h.playMode == 'vod') {
+				return h.episodeIndex
+			}
+		}
+		return -1
+	}
+
+	// 若有历史进度，提示续播
+	const checkResume = () => {
+		const v = vod.value
+		if (v == null || v.sources.length == 0) return
+		// 简化：查看第0集是否有进度
+		const p = getProgress(vodKey, 0)
+		if (p != null && p.position > 30) {
+			uni.showToast({ title: '上次看到第1集，可从选集继续', icon: 'none' })
+		}
+	}
+
+	const switchSource = (i : number) => {
+		srcIdx.value = i
+	}
+
+	const playFirst = () => {
+		playEp(0)
+	}
+
+	const playEp = (i : number) => {
+		const v = vod.value
+		if (v == null || v.sources.length == 0) return
+		const src = v.sources[srcIdx.value]
+		if (src.episodes.length == 0) return
+		const ep = src.episodes[i]
+		curEpIndex.value = i
+		uni.navigateTo({
+			url: `/pages/player/player?api=${encodeURIComponent(apiBase)}&id=${vodId}&src=${srcIdx.value}&ep=${i}`
+		})
+	}
+
+	const toggleFav = () => {
+		const v = vod.value
+		if (v == null) return
+		const item = new FavoriteItem()
+		item.key = vodKey
+		item.vodId = vodId
+		item.sourceApi = apiBase
+		item.name = v.name
+		item.pic = v.pic
+		item.remark = v.remark
+		item.updateTime = Date.now()
+		fav.value = toggleFavorite(item)
+		uni.showToast({ title: fav.value ? '已收藏' : '已取消', icon: 'none' })
+	}
+</script>
+
+<style>
+	.detail-scroll {
+		flex: 1;
+	}
+
+	.detail-loading {
+		padding: 120rpx 64rpx;
+		align-items: center;
+	}
+
+	.detail-retry {
+		margin-top: 24rpx;
+		padding: 16rpx 56rpx;
+	}
+
+	.detail-body {
+		padding: 32rpx;
+	}
+
+	.detail-pic {
+		width: 200rpx;
+		height: 272rpx;
+		border-radius: 20rpx;
+		background-color: #262b36;
+	}
+
+	.detail-pic-empty {
+		align-items: center;
+		justify-content: center;
+	}
+
+	.detail-head-info {
+		margin-left: 28rpx;
+	}
+
+	.detail-head-tags {
+		margin-top: 16rpx;
+	}
+
+	.detail-head-tag {
+		margin-right: 12rpx;
+		margin-bottom: 8rpx;
+	}
+
+	.detail-line {
+		margin-top: 16rpx;
+		lines: 2;
+		text-overflow: ellipsis;
+	}
+
+	.detail-actions {
+		margin-top: 32rpx;
+	}
+
+	.detail-play-btn {
+		flex: 1;
+		height: 84rpx;
+	}
+
+	.detail-fav-btn {
+		width: 192rpx;
+		height: 84rpx;
+		margin-left: 20rpx;
+	}
+
+	.detail-intro {
+		margin-top: 28rpx;
+	}
+
+	.detail-intro-text {
+		margin-top: 16rpx;
+		line-height: 44rpx;
+	}
+
+	.detail-sec-title {
+		margin-bottom: 20rpx;
+	}
+
+	.detail-sources {
+		margin-top: 28rpx;
+	}
+
+	.detail-episodes {
+		margin-top: 28rpx;
+		margin-bottom: 80rpx;
+	}
+</style>

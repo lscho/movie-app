@@ -1,0 +1,206 @@
+// 苹果CMS标准资源站 API 封装
+import { VodItem, PlaySource, Episode } from '../types/model.uts'
+import { flagLabel, SUGGEST_SOURCES } from './config.uts'
+
+export class VodResult {
+	list : Array<VodItem> = new Array<VodItem>()
+	total : number = 0
+	page : number = 1
+	pageCount : number = 1
+	code : number = 0             // 0成功 其他失败
+	msg : string = ""
+}
+
+function pickStr(obj : UTSJSONObject, key : string) : string {
+	const v = obj[key]
+	if (v == null) return ""
+	return v.toString()
+}
+
+// 解析 vod_play_url / vod_play_from 成多线路
+function parseSources(playFrom : string, playUrl : string) : Array<PlaySource> {
+	const result : Array<PlaySource> = new Array<PlaySource>()
+	if (playFrom.length == 0 || playUrl.length == 0) return result
+	const flags = playFrom.split('$$$')
+	const groups = playUrl.split('$$$')
+	const count = flags.length < groups.length ? flags.length : groups.length
+	for (let i = 0; i < count; i++) {
+		const ps = new PlaySource(flags[i].trim(), flagLabel(flags[i].trim()))
+		const eps = groups[i].split('#')
+		for (let j = 0; j < eps.length; j++) {
+			const seg = eps[j]
+			const idx = seg.indexOf('$')
+			if (idx > 0) {
+				ps.episodes.push(new Episode(seg.substring(0, idx).trim(), seg.substring(idx + 1).trim()))
+			} else if (seg.length > 0) {
+				ps.episodes.push(new Episode(`第${j + 1}集`, seg.trim()))
+			}
+		}
+		if (ps.episodes.length > 0) result.push(ps)
+	}
+	return result
+}
+
+// 从苹果CMS JSON 列表构建 VodItem
+function buildItems(list : Array<UTSJSONObject>, api : string, loadDetail : boolean) : Array<VodItem> {
+	const out : Array<VodItem> = new Array<VodItem>()
+	for (let i = 0; i < list.length; i++) {
+		const o = list[i]
+		const item = new VodItem()
+		item.vodId = pickStr(o, 'vod_id') == '' ? pickStr(o, 'id') : pickStr(o, 'vod_id')
+		item.sourceApi = api
+		item.name = pickStr(o, 'vod_name') == '' ? pickStr(o, 'name') : pickStr(o, 'vod_name')
+		item.pic = pickStr(o, 'vod_pic') == '' ? pickStr(o, 'pic') : pickStr(o, 'vod_pic')
+		item.remark = pickStr(o, 'vod_remarks')
+		item.typeName = pickStr(o, 'type_name')
+		item.year = pickStr(o, 'vod_year')
+		item.area = pickStr(o, 'vod_area')
+		item.actor = pickStr(o, 'vod_actor')
+		item.director = pickStr(o, 'vod_director')
+		item.content = pickStr(o, 'vod_content')
+		if (loadDetail) {
+			item.sources = parseSources(pickStr(o, 'vod_play_from'), pickStr(o, 'vod_play_url'))
+			item.hasPlay = item.sources.length > 0
+		}
+		out.push(item)
+	}
+	return out
+}
+
+// 搜索（wd）或取详情（ids）
+export function fetchVod(api : string,
+	params : string,
+	loadDetail : boolean,
+	callback : (res : VodResult) => void) {
+	const result = new VodResult()
+	uni.request<UTSJSONObject>({
+		url: `${api}?ac=videolist&${params}`,
+		method: 'GET',
+		timeout: 12000,
+		header: { 'User-Agent': 'Mozilla/5.0' } as UTSJSONObject,
+		success: (res) => {
+			const data = res.data
+			if (data == null) {
+				result.msg = '响应为空'
+				callback(result)
+				return
+			}
+			const total = data['total']
+			result.total = total == null ? 0 : parseInt(total.toString())
+			const pc = data['pagecount']
+			result.pageCount = pc == null ? 1 : parseInt(pc.toString())
+			const listArr = data['list']
+			if (listArr == null) {
+				result.msg = '无数据'
+				callback(result)
+				return
+			}
+			result.list = buildItems(listArr as Array<UTSJSONObject>, api, loadDetail)
+			result.code = 0
+			callback(result)
+		},
+		fail: (err) => {
+			result.code = -1
+			result.msg = err.errMsg
+			callback(result)
+		}
+	})
+}
+
+// suggest型资源站（如无损云）：搜索走 suggest 联想接口，仅返回片名列表（不含播放数据）；
+// 详情走标准苹果CMS ac=detail。suggestSrc 是 SUGGEST_SOURCES 中的条目 key。
+export function fetchVodSuggest(suggestSrc : string,
+	api : string,
+	params : string,
+	loadDetail : boolean,
+	callback : (res : VodResult) => void) {
+	const result = new VodResult()
+	// 详情：直接走标准接口
+	if (params.indexOf('ids=') == 0) {
+		fetchVod(api, params, loadDetail, callback)
+		return
+	}
+	// 搜索：解析 wd 参数走 suggest
+	const idx = params.indexOf('wd=')
+	const kw = idx >= 0 ? decodeURIComponent(params.substring(idx + 3)) : ''
+	if (kw.length == 0) {
+		result.msg = '无关键词'
+		callback(result)
+		return
+	}
+	uni.request<UTSJSONObject>({
+		url: `${suggestSrc}?mid=1&wd=${encodeURIComponent(kw)}`,
+		method: 'GET',
+		timeout: 12000,
+		header: { 'User-Agent': 'Mozilla/5.0' } as UTSJSONObject,
+		success: (res) => {
+			const data = res.data
+			if (data == null) {
+				result.msg = '响应为空'
+				callback(result)
+				return
+			}
+			const listArr = data['list']
+			if (listArr == null) {
+				result.msg = '无数据'
+				callback(result)
+				return
+			}
+			// suggest 返回 id/name/pic，标记 sourceApi 为 detail 接口以便后续取详情
+			result.list = buildItems(listArr as Array<UTSJSONObject>, api, false)
+			result.total = result.list.length
+			result.pageCount = 1
+			result.code = 0
+			callback(result)
+		},
+		fail: (err) => {
+			result.code = -1
+			result.msg = err.errMsg
+			callback(result)
+		}
+	})
+}
+
+// 多源并发搜索，聚合回调（每完成一个源回调一次）
+export class SearchAggregator {
+	private sources : Array<SourceApi>
+	private keyword : string
+	private doneCount : number = 0
+
+	constructor(sources : Array<SourceApi>, keyword : string) {
+		this.sources = sources
+		this.keyword = keyword
+	}
+
+	search(onProgress : (items : Array<VodItem>, done : number, total : number) => void) {
+		const total = this.sources.length
+		if (total == 0) {
+			onProgress(new Array<VodItem>(), 0, 0)
+			return
+		}
+		for (let i = 0; i < this.sources.length; i++) {
+			const src = this.sources[i]
+			const onDone = (res : VodResult) => {
+				for (let j = 0; j < res.list.length; j++) {
+					res.list[j].sourceId = src.id
+					res.list[j].sourceName = src.name
+				}
+				this.doneCount++
+				onProgress(res.list, this.doneCount, total)
+			}
+			// suggest型资源站走专用搜索
+			let suggestBase = ''
+			for (let k = 0; k < SUGGEST_SOURCES.length; k++) {
+				if (SUGGEST_SOURCES[k].key == src.id) {
+					suggestBase = SUGGEST_SOURCES[k].suggestApi
+					break
+				}
+			}
+			if (suggestBase.length > 0) {
+				fetchVodSuggest(suggestBase, src.api, `wd=${encodeURIComponent(this.keyword)}`, false, onDone)
+			} else {
+				fetchVod(src.api, `wd=${encodeURIComponent(this.keyword)}`, false, onDone)
+			}
+		}
+	}
+}

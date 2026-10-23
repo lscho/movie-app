@@ -1,0 +1,140 @@
+// 本地存储封装：历史 / 收藏 / 播放进度 / 配置
+import { HistoryItem, FavoriteItem, ProgressItem, SourceApi, ParseApi } from '../types/model.uts'
+import { DEFAULT_SOURCES, DEFAULT_PARSES } from './config.uts'
+
+const KEY_HISTORY = 'app_history'
+const KEY_FAVORITE = 'app_favorite'
+const KEY_PROGRESS = 'app_progress_'
+const KEY_SOURCES = 'app_sources'
+const KEY_PARSES = 'app_parses'
+
+// ---------- 历史 ----------
+export function getHistory() : Array<HistoryItem> {
+	const raw = uni.getStorageSync(KEY_HISTORY)
+	if (raw == null) return new Array<HistoryItem>()
+	const s = raw as string
+	if (s.length == 0) return new Array<HistoryItem>()
+	const arr = JSON.parse(s) as Array<HistoryItem>
+	return arr
+}
+
+export function pushHistory(item : HistoryItem) {
+	let arr = getHistory()
+	// 去重：同片覆盖
+	let exists = -1
+	for (let i = 0; i < arr.length; i++) {
+		if (arr[i].key == item.key) {
+			exists = i
+			break
+		}
+	}
+	if (exists >= 0) arr.splice(exists, 1)
+	arr.unshift(item)
+	if (arr.length > 100) arr.length = 100
+	uni.setStorageSync(KEY_HISTORY, JSON.stringify(arr))
+}
+
+export function removeHistory(key : string) {
+	let arr = getHistory()
+	for (let i = 0; i < arr.length; i++) {
+		if (arr[i].key == key) {
+			arr.splice(i, 1)
+			break
+		}
+	}
+	uni.setStorageSync(KEY_HISTORY, JSON.stringify(arr))
+}
+
+export function clearHistory() {
+	uni.removeStorageSync(KEY_HISTORY)
+}
+
+// ---------- 收藏 ----------
+export function getFavorites() : Array<FavoriteItem> {
+	const raw = uni.getStorageSync(KEY_FAVORITE)
+	if (raw == null) return new Array<FavoriteItem>()
+	const s = raw as string
+	if (s.length == 0) return new Array<FavoriteItem>()
+	return JSON.parse(s) as Array<FavoriteItem>
+}
+
+export function isFavorite(key : string) : boolean {
+	const arr = getFavorites()
+	for (let i = 0; i < arr.length; i++) {
+		if (arr[i].key == key) return true
+	}
+	return false
+}
+
+export function toggleFavorite(item : FavoriteItem) : boolean {
+	let arr = getFavorites()
+	for (let i = 0; i < arr.length; i++) {
+		if (arr[i].key == item.key) {
+			arr.splice(i, 1)
+			uni.setStorageSync(KEY_FAVORITE, JSON.stringify(arr))
+			return false
+		}
+	}
+	arr.unshift(item)
+	uni.setStorageSync(KEY_FAVORITE, JSON.stringify(arr))
+	return true
+}
+
+// ---------- 播放进度 ----------
+export function saveProgress(vodKey : string, episodeIndex : number, position : number, duration : number) {
+	const k = `${vodKey}_${episodeIndex}`
+	const p = new ProgressItem(position, duration)
+	uni.setStorageSync(KEY_PROGRESS + k, JSON.stringify(p))
+}
+
+export function getProgress(vodKey : string, episodeIndex : number) : ProgressItem | null {
+	const raw = uni.getStorageSync(KEY_PROGRESS + `${vodKey}_${episodeIndex}`)
+	if (raw == null) return null
+	const s = raw as string
+	if (s.length == 0) return null
+	return JSON.parse(s) as ProgressItem
+}
+
+// ---------- 资源站配置 ----------
+export function getSources() : Array<SourceApi> {
+	const raw = uni.getStorageSync(KEY_SOURCES)
+	if (raw == null) return DEFAULT_SOURCES
+	const s = raw as string
+	if (s.length == 0) return DEFAULT_SOURCES
+	return JSON.parse(s) as Array<SourceApi>
+}
+
+export function saveSources(arr : Array<SourceApi>) {
+	uni.setStorageSync(KEY_SOURCES, JSON.stringify(arr))
+}
+
+export function resetSources() {
+	uni.removeStorageSync(KEY_SOURCES)
+}
+
+// ---------- 解析接口配置 ----------
+export function getParses() : Array<ParseApi> {
+	const raw = uni.getStorageSync(KEY_PARSES)
+	if (raw == null) return DEFAULT_PARSES
+	const s = raw as string
+	if (s.length == 0) return DEFAULT_PARSES
+	return JSON.parse(s) as Array<ParseApi>
+}
+
+export function saveParses(arr : Array<ParseApi>) {
+	uni.setStorageSync(KEY_PARSES, JSON.stringify(arr))
+}
+
+export function resetParses() {
+	uni.removeStorageSync(KEY_PARSES)
+}
+
+// 启用的解析接口（按顺序）
+export function enabledParses() : Array<ParseApi> {
+	const all = getParses()
+	const result : Array<ParseApi> = new Array<ParseApi>()
+	for (let i = 0; i < all.length; i++) {
+		if (all[i].enabled) result.push(all[i])
+	}
+	return result
+}

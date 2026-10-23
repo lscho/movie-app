@@ -1,0 +1,257 @@
+<template>
+	<view class="page">
+		<!-- Tab 栏 -->
+		<view class="mine-tabs row">
+			<view class="mine-tab flex1" hover-class="chip-hover" @click="tab = 0">
+				<text :class="tab == 0 ? 't-accent' : 't-sub'">历史</text>
+			</view>
+			<view class="mine-tab flex1" hover-class="chip-hover" @click="tab = 1">
+				<text :class="tab == 1 ? 't-accent' : 't-sub'">收藏</text>
+			</view>
+			<view class="mine-tab flex1" hover-class="chip-hover" @click="tab = 2">
+				<text :class="tab == 2 ? 't-accent' : 't-sub'">资源站</text>
+			</view>
+			<view class="mine-tab flex1" hover-class="chip-hover" @click="tab = 3">
+				<text :class="tab == 3 ? 't-accent' : 't-sub'">解析接口</text>
+			</view>
+		</view>
+		<view class="divider"></view>
+
+		<scroll-view class="mine-scroll" direction="vertical">
+			<!-- 历史 -->
+			<view v-if="tab == 0">
+				<view class="mine-clear row" v-if="history.length > 0">
+					<view class="flex1"></view>
+					<text class="t-dim" @click="clearAllHistory">清空历史</text>
+				</view>
+				<view class="mine-empty" v-if="history.length == 0">
+					<text class="t-dim">暂无观看记录</text>
+				</view>
+				<view class="mine-item row" hover-class="search-item-hover" v-for="(item, idx) in history" :key="idx">
+					<image class="mine-item-pic" :src="item.pic" mode="aspectFill"
+						v-if="item.pic.length > 0" @click="continueItem(item)"></image>
+					<view class="mine-item-pic mine-item-pic-empty" v-else @click="continueItem(item)">
+						<text class="t-dim">无图</text>
+					</view>
+					<view class="flex1 mine-item-info" @click="continueItem(item)">
+						<text class="t-main">{{item.name}}</text>
+						<text class="t-dim mine-item-sub">看到 {{item.episodeName}} · {{item.flag}}</text>
+					</view>
+					<text class="t-dim mine-item-del" @click="delHistory(item.key)">删除</text>
+				</view>
+			</view>
+
+			<!-- 收藏 -->
+			<view v-if="tab == 1">
+				<view class="mine-empty" v-if="favorites.length == 0">
+					<text class="t-dim">暂无收藏，去详情页收藏吧</text>
+				</view>
+				<view class="mine-item row" hover-class="search-item-hover" v-for="(item, idx) in favorites" :key="idx" @click="openFavorite(item)">
+					<image class="mine-item-pic" :src="item.pic" mode="aspectFill" v-if="item.pic.length > 0"></image>
+					<view class="mine-item-pic mine-item-pic-empty" v-else>
+						<text class="t-dim">无图</text>
+					</view>
+					<view class="flex1 mine-item-info">
+						<text class="t-main">{{item.name}}</text>
+						<text class="t-dim mine-item-sub" v-if="item.remark.length > 0">{{item.remark}}</text>
+					</view>
+				</view>
+			</view>
+
+			<!-- 资源站 -->
+			<view v-if="tab == 2">
+				<view class="mine-tip">
+					<text class="t-dim">资源站提供影片数据与m3u8播放源，关闭后搜索时将跳过</text>
+				</view>
+				<view class="mine-item row" hover-class="search-item-hover" v-for="(s, idx) in sources" :key="idx">
+					<view class="flex1">
+						<text class="t-main">{{s.name}}</text>
+						<text class="t-dim mine-item-sub">{{s.api}}</text>
+					</view>
+					<switch :checked="s.enabled" color="#3d9bff" @change="toggleSource(idx)" />
+				</view>
+				<view class="mine-reset" @click="resetSourceCfg">
+					<text class="t-dim">恢复默认资源站</text>
+				</view>
+			</view>
+
+			<!-- 解析接口 -->
+			<view v-if="tab == 3">
+				<view class="mine-tip">
+					<text class="t-dim">解析接口用于播放腾讯/爱奇艺等VIP链接，来自daga.cc，失效时请切换其他接口</text>
+				</view>
+				<view class="mine-item row" hover-class="search-item-hover" v-for="(p, idx) in parses" :key="idx">
+					<view class="flex1">
+						<text class="t-main">{{p.name}}</text>
+						<text class="t-dim mine-item-sub">{{p.url}}</text>
+					</view>
+					<switch :checked="p.enabled" color="#3d9bff" @change="toggleParse(idx)" />
+				</view>
+				<view class="mine-reset" @click="resetParseCfg">
+					<text class="t-dim">恢复默认接口</text>
+				</view>
+			</view>
+			<view class="mine-bottom-space"></view>
+		</scroll-view>
+	</view>
+</template>
+
+<script setup lang="uts">
+	import { HistoryItem } from '../../types/model.uts'
+	import { FavoriteItem } from '../../types/model.uts'
+	import { SourceApi } from '../../types/model.uts'
+	import { ParseApi } from '../../types/model.uts'
+	import { getHistory, removeHistory, clearHistory, getFavorites,
+		getSources, saveSources, resetSources,
+		getParses, saveParses, resetParses } from '../../api/store.uts'
+
+	const tab = ref(0)
+	const history = ref<Array<HistoryItem>>(new Array<HistoryItem>())
+	const favorites = ref<Array<FavoriteItem>>(new Array<FavoriteItem>())
+	const sources = ref<Array<SourceApi>>(new Array<SourceApi>())
+	const parses = ref<Array<ParseApi>>(new Array<ParseApi>())
+
+	onLoad(() => {
+		refresh()
+	})
+
+	onPageShow(() => {
+		refresh()
+	})
+
+	const refresh = () => {
+		history.value = getHistory()
+		favorites.value = getFavorites()
+		sources.value = getSources()
+		parses.value = getParses()
+	}
+
+	const continueItem = (item : HistoryItem) => {
+		if (item.playMode == 'parse') {
+			uni.navigateTo({
+				url: `/pages/parse/parse?url=${encodeURIComponent(item.episodeUrl)}&name=${encodeURIComponent(item.name)}`
+			})
+		} else {
+			uni.navigateTo({
+				url: `/pages/player/player?api=${encodeURIComponent(item.sourceApi)}&id=${item.vodId}&ep=${item.episodeIndex}`
+			})
+		}
+	}
+
+	const delHistory = (key : string) => {
+		removeHistory(key)
+		refresh()
+	}
+
+	const clearAllHistory = () => {
+		uni.showModal({
+			title: '提示',
+			content: '确定清空全部观看记录？',
+			success: (res : ShowModalSuccess) => {
+				if (res.confirm) {
+					clearHistory()
+					refresh()
+				}
+			}
+		})
+	}
+
+	const openFavorite = (item : FavoriteItem) => {
+		uni.navigateTo({
+			url: `/pages/detail/detail?api=${encodeURIComponent(item.sourceApi)}&id=${item.vodId}&name=${encodeURIComponent(item.name)}`
+		})
+	}
+
+	const toggleSource = (idx : number) => {
+		const arr = sources.value
+		if (idx >= arr.length) return
+		arr[idx].enabled = !arr[idx].enabled
+		saveSources(arr)
+	}
+
+	const toggleParse = (idx : number) => {
+		const arr = parses.value
+		if (idx >= arr.length) return
+		arr[idx].enabled = !arr[idx].enabled
+		saveParses(arr)
+	}
+
+	const resetSourceCfg = () => {
+		resetSources()
+		refresh()
+	}
+
+	const resetParseCfg = () => {
+		resetParses()
+		refresh()
+	}
+</script>
+
+<style>
+	.mine-tabs {
+		height: 88rpx;
+		padding: 0 16rpx;
+	}
+
+	.mine-tab {
+		align-items: center;
+		justify-content: center;
+		height: 88rpx;
+	}
+
+	.mine-scroll {
+		flex: 1;
+	}
+
+	.mine-clear {
+		padding: 20rpx 32rpx;
+	}
+
+	.mine-empty {
+		padding: 120rpx 64rpx;
+		align-items: center;
+	}
+
+	.mine-item {
+		padding: 20rpx 32rpx;
+	}
+
+	.mine-item-pic {
+		width: 112rpx;
+		height: 152rpx;
+		border-radius: 16rpx;
+		background-color: #262b36;
+	}
+
+	.mine-item-pic-empty {
+		align-items: center;
+		justify-content: center;
+	}
+
+	.mine-item-info {
+		margin-left: 24rpx;
+	}
+
+	.mine-item-sub {
+		margin-top: 12rpx;
+		lines: 1;
+		text-overflow: ellipsis;
+	}
+
+	.mine-item-del {
+		padding: 16rpx 0 16rpx 24rpx;
+	}
+
+	.mine-tip {
+		padding: 24rpx 32rpx;
+	}
+
+	.mine-reset {
+		padding: 32rpx;
+		align-items: center;
+	}
+
+	.mine-bottom-space {
+		height: 80rpx;
+	}
+</style>

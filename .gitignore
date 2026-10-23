@@ -1,0 +1,25 @@
+# 构建产物与缓存
+unpackage/
+build/
+.DS_Store
+
+# HBuilderX
+.hbuilderx/
+
+# Android 本地打包工程（native-android/）
+native-android/dcloud-sdk
+native-android/local.properties
+native-android/.gradle/
+native-android/.idea/
+native-android/build/
+native-android/app/build/
+native-android/app/src/main/assets/apps/
+*.iml
+
+# 敏感信息（签名证书与密码留在本地）
+*.keystore
+*.jks
+storepass.txt
+
+# 本地工具状态
+.workbuddy/

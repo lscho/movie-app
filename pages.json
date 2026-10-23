@@ -1,0 +1,54 @@
+{
+	"pages": [
+		{
+			"path": "pages/index/index",
+			"style": {
+				"navigationBarTitleText": "全民影视"
+			}
+		},
+		{
+			"path": "pages/search/search",
+			"style": {
+				"navigationBarTitleText": "搜索"
+			}
+		},
+		{
+			"path": "pages/detail/detail",
+			"style": {
+				"navigationBarTitleText": "详情"
+			}
+		},
+		{
+			"path": "pages/player/player",
+			"style": {
+				"navigationBarTitleText": "播放",
+				"navigationStyle": "custom"
+			}
+		},
+		{
+			"path": "pages/parse/parse",
+			"style": {
+				"navigationBarTitleText": "解析播放",
+				"navigationStyle": "custom"
+			}
+		},
+		{
+			"path": "pages/mine/mine",
+			"style": {
+				"navigationBarTitleText": "我的"
+			}
+		}
+	],
+	"globalStyle": {
+		"navigationBarTextStyle": "white",
+		"navigationBarTitleText": "全民影视",
+		"navigationBarBackgroundColor": "#1a1c22",
+		"backgroundColor": "#12141a",
+		"pageOrientation": "auto",
+		"rpxCalcMaxDeviceWidth": 960,
+		"rpxCalcBaseDeviceWidth": 750,
+		"rpxCalcIncludeWidth": 750,
+		"dynamicRpx": true
+	},
+	"uniIdRouter": {}
+}

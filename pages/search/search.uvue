@@ -1,0 +1,198 @@
+<template>
+	<view class="page">
+		<!-- 搜索栏 -->
+		<view class="search-bar row">
+			<input class="search-input" v-model="keyword" placeholder="输入影片名称" placeholder-style="color:#6b7280"
+				confirm-type="search" focus @confirm="doSearch" />
+			<view class="search-btn btn-primary" hover-class="btn-primary-hover" @click="doSearch">
+				<text class="t-white">搜索</text>
+			</view>
+		</view>
+		<view class="search-status">
+			<text class="t-dim" v-if="searching">正在搜索 {{doneCount}}/{{totalSources}} 个资源站…</text>
+			<text class="t-dim" v-else-if="items.length > 0">共 {{items.length}} 条结果</text>
+		</view>
+
+		<!-- 结果列表 -->
+		<list-view class="search-list" v-if="items.length > 0">
+			<list-item class="search-item-cell" v-for="(item, idx) in items" :key="item.sourceApi + '_' + item.vodId">
+				<view class="search-item row" hover-class="search-item-hover" @click="goDetail(item)">
+					<image class="search-item-pic" :src="item.pic" mode="aspectFill" v-if="item.pic.length > 0"></image>
+					<view class="search-item-pic search-item-pic-empty" v-else>
+						<text class="t-dim">无图</text>
+					</view>
+					<view class="search-item-info flex1">
+						<text class="t-title search-item-name">{{item.name}}</text>
+						<view class="row search-item-tags">
+							<text class="tag search-item-tag" v-if="item.typeName.length > 0">{{item.typeName}}</text>
+							<text class="tag search-item-tag" v-if="item.year.length > 0">{{item.year}}</text>
+							<text class="tag-accent search-item-tag" v-if="item.remark.length > 0">{{item.remark}}</text>
+						</view>
+						<text class="t-dim search-item-src">来源：{{item.sourceName}}</text>
+					</view>
+				</view>
+			</list-item>
+		</list-view>
+
+		<!-- 空态 -->
+		<view class="search-empty" v-if="!searching && items.length == 0 && searched">
+			<text class="t-sub">未找到相关影片，换个关键词试试</text>
+		</view>
+		<view class="search-empty" v-if="!searching && items.length == 0 && !searched">
+			<text class="t-dim">输入片名，多资源站聚合搜索</text>
+		</view>
+	</view>
+</template>
+
+<script setup lang="uts">
+	import { VodItem } from '../../types/model.uts'
+	import { SourceApi } from '../../types/model.uts'
+	import { getSources } from '../../api/store.uts'
+	import { SearchAggregator } from '../../api/vod.uts'
+
+	const keyword = ref('')
+	const items = ref<Array<VodItem>>(new Array<VodItem>())
+	const searching = ref(false)
+	const searched = ref(false)
+	const doneCount = ref(0)
+	const totalSources = ref(0)
+	let seenKeys : string[] = []
+
+	onLoad((options : OnLoadOptions) => {
+		const kw = options['kw'] ?? ''
+		if (kw.length > 0) {
+			keyword.value = kw
+			doSearch()
+		}
+	})
+
+	const doSearch = () => {
+		const kw = keyword.value.trim()
+		if (kw.length == 0) {
+			uni.showToast({ title: '请输入片名', icon: 'none' })
+			return
+		}
+		const allSources = getSources()
+		const sources : Array<SourceApi> = new Array<SourceApi>()
+		for (let i = 0; i < allSources.length; i++) {
+			if (allSources[i].enabled) sources.push(allSources[i])
+		}
+		items.value = new Array<VodItem>()
+		seenKeys = []
+		doneCount.value = 0
+		totalSources.value = sources.length
+		if (sources.length == 0) {
+			uni.showToast({ title: '无可用资源站，请到我的-资源站配置开启', icon: 'none' })
+			return
+		}
+		searching.value = true
+		searched.value = true
+		const agg = new SearchAggregator(sources, kw)
+		agg.search((list, done, total) => {
+			// 按片名+年份去重合并
+			for (let i = 0; i < list.length; i++) {
+				const it = list[i]
+				const k = `${it.name}_${it.year}`
+				let dup = false
+				for (let j = 0; j < seenKeys.length; j++) {
+					if (seenKeys[j] == k) {
+						dup = true
+						break
+					}
+				}
+				if (dup) continue
+				seenKeys.push(k)
+				items.value.push(it)
+			}
+			doneCount.value = done
+			if (done >= total) {
+				searching.value = false
+			}
+		})
+	}
+
+	const goDetail = (item : VodItem) => {
+		uni.navigateTo({
+			url: `/pages/detail/detail?api=${encodeURIComponent(item.sourceApi)}&id=${item.vodId}&name=${encodeURIComponent(item.name)}`
+		})
+	}
+</script>
+
+<style>
+	.search-bar {
+		padding: 20rpx 32rpx;
+	}
+
+	.search-input {
+		flex: 1;
+		height: 76rpx;
+		background-color: #262b36;
+		border-radius: 16rpx;
+		padding: 0 24rpx;
+		font-size: 28rpx;
+		color: #ffffff;
+	}
+
+	.search-btn {
+		width: 140rpx;
+		margin-left: 16rpx;
+		height: 76rpx;
+	}
+
+	.search-status {
+		padding: 4rpx 36rpx 16rpx 36rpx;
+	}
+
+	.search-list {
+		flex: 1;
+	}
+
+	.search-item-cell {
+		padding: 10rpx 32rpx;
+	}
+
+	.search-item {
+		background-color: #1e222b;
+		border-radius: 20rpx;
+		padding: 20rpx;
+	}
+
+	.search-item-pic {
+		width: 136rpx;
+		height: 184rpx;
+		border-radius: 16rpx;
+		background-color: #262b36;
+	}
+
+	.search-item-pic-empty {
+		align-items: center;
+		justify-content: center;
+	}
+
+	.search-item-info {
+		margin-left: 24rpx;
+	}
+
+	.search-item-name {
+		font-size: 32rpx;
+		lines: 1;
+		text-overflow: ellipsis;
+	}
+
+	.search-item-tags {
+		margin-top: 12rpx;
+	}
+
+	.search-item-tag {
+		margin-right: 12rpx;
+	}
+
+	.search-item-src {
+		margin-top: 16rpx;
+	}
+
+	.search-empty {
+		padding: 160rpx 64rpx;
+		align-items: center;
+	}
+</style>

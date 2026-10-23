@@ -1,0 +1,66 @@
+// 内置配置：资源站 + 解析接口 + 线路名映射
+// 解析接口抓取自 daga.cc 与 88lin/video_vip（2026-10），存活状态已实测；失效接口保留，可通过"我的-接口管理"启停
+import { SourceApi, ParseApi } from '../types/model.uts'
+
+export const DEFAULT_SOURCES : Array<SourceApi> = [
+	new SourceApi('wsyzy', '无损云', 'https://api.wsyzy.net/api.php/provide/vod/'),
+	new SourceApi('360zy', '360资源', 'https://360zy.com/api.php/provide/vod'),
+	new SourceApi('ffzy', '非凡资源', 'https://cj.ffzyapi.com/api.php/provide/vod'),
+	new SourceApi('bfzy', '暴风资源', 'https://bfzyapi.com/api.php/provide/vod'),
+	new SourceApi('lzi', '量子资源', 'https://cj.lziapi.com/api.php/provide/vod')
+]
+
+// suggest型资源站：搜索不支持 ac=videolist&wd=，改走联想接口（来自 88lin/video_vip 的无损云直连方案）
+export class SuggestSource {
+	key : string = ""
+	suggestApi : string = ""
+	constructor(key : string = "", suggestApi : string = "") {
+		this.key = key
+		this.suggestApi = suggestApi
+	}
+}
+
+export const SUGGEST_SOURCES : Array<SuggestSource> = [
+	new SuggestSource('wsyzy', 'https://wsyzy.cc/index.php/ajax/suggest')
+]
+
+export const DEFAULT_PARSES : Array<ParseApi> = [
+	new ParseApi('m1907', '万能解析·搜片名', 'https://z1.m1907.top/?jx='),
+	new ParseApi('m1907cn', '智能解析(备用)', 'https://z1.m1907.cn/?jx='),
+	new ParseApi('daga-vip2', '优酷解析(备用)', 'https://www.daga.cc/vip2/?url='),
+	new ParseApi('daga-vip3', '爱奇艺解析(备用)', 'https://www.daga.cc/vip3/?url='),
+	new ParseApi('txnp', 'TXNQ解析', 'https://bfq.txnp.cn/player?url='),
+	new ParseApi('789', '789解析', 'https://jiexi.789jiexi.com/?url='),
+	new ParseApi('bingdou', '冰豆解析', 'https://bd.jx.cn/?url='),
+	new ParseApi('qilin', '麒麟解析', 'https://free.maccms.xyz/?url='),
+	new ParseApi('jsonplayer', '电视剧解析', 'https://jx.jsonplayer.com/player/?url=', false),
+	new ParseApi('playerjy', '电影解析', 'https://jx.playerjy.com/?ads=0&url=', false),
+	new ParseApi('tyhua', '蓝光直解', 'https://llq.tyhua.top/?url=', false),
+	new ParseApi('mrgao', '好莱坞解析', 'https://player.mrgaocloud.com/player/?url=', false)
+]
+
+// 苹CMS play_from 标识 → 展示名
+export function flagLabel(flag : string) : string {
+	if (flag.indexOf('m3u8') >= 0) return 'm3u8线路'
+	if (flag == '360zy') return '360线路'
+	if (flag == 'ffm3u8' || flag == 'feifan') return '非凡线路'
+	if (flag == 'bfzym3u8') return '暴风线路'
+	if (flag == 'lzm3u8') return '量子线路'
+	if (flag == 'wsym3u8') return '无损云线路'
+	return flag
+}
+
+// 判断字符串是否为视频平台网址（走解析通道）
+export function isVideoSiteUrl(text : string) : boolean {
+	const t = text.trim().toLowerCase()
+	if (t.indexOf('http://') != 0 && t.indexOf('https://') != 0) return false
+	const hosts = ['v.qq.com', 'www.iqiyi.com', 'iqiyi.com', 'www.youku.com', 'v.youku.com',
+		'www.mgtv.com', 'mgtv.com', 'www.bilibili.com', 'bilibili.com', 'tv.sohu.com',
+		'www.1905.com', '1905.com', 'pptv.com', 'v.pptv.com', 'www.wasu.cn', 'le.com',
+		'tudou.com', 'acfun.cn']
+	for (let i = 0; i < hosts.length; i++) {
+		if (t.indexOf(hosts[i]) >= 0) return true
+	}
+	// 兜底：任意 http 链接也允许解析
+	return true
+}

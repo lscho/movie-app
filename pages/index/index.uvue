@@ -1,0 +1,235 @@
+<template>
+	<view class="page">
+		<scroll-view class="home-scroll" direction="vertical">
+			<view class="home-header">
+				<view class="home-brand">
+					<image class="home-brand-mark" src="/static/brand/logo-mark.png" mode="aspectFit"></image>
+					<text class="t-title">全民影视</text>
+				</view>
+				<view class="home-mine-btn" hover-class="focusable-hover" @click="goMine">
+					<text class="t-accent">我的</text>
+				</view>
+			</view>
+
+			<!-- 搜索区 -->
+			<view class="home-search card">
+				<input class="home-input" v-model="keyword" placeholder="输入影片名称或粘贴VIP视频链接"
+					placeholder-style="color:#6b7280" confirm-type="search" @confirm="onSearch" />
+				<view class="home-search-btn btn-primary" hover-class="btn-primary-hover" @click="onSearch">
+					<text class="t-white">搜索</text>
+				</view>
+			</view>
+			<view class="home-tip">
+				<text class="t-dim">支持腾讯/爱奇艺/优酷/芒果TV链接，粘贴后自动进入解析播放</text>
+			</view>
+
+			<!-- 快捷解析 -->
+			<view class="home-quick row">
+				<view class="home-quick-item chip" hover-class="chip-hover" @click="goParseDefault">
+					<text class="t-accent">VIP链接解析</text>
+				</view>
+				<view class="home-quick-item chip" hover-class="chip-hover" @click="fillHot('三体')">
+					<text class="t-sub">三体</text>
+				</view>
+				<view class="home-quick-item chip" hover-class="chip-hover" @click="fillHot('庆余年')">
+					<text class="t-sub">庆余年</text>
+				</view>
+				<view class="home-quick-item chip" hover-class="chip-hover" @click="fillHot('流浪地球')">
+					<text class="t-sub">流浪地球</text>
+				</view>
+			</view>
+
+			<!-- 继续观看 -->
+			<view class="home-section" v-if="history.length > 0">
+				<view class="row">
+					<text class="t-main home-section-title">继续观看</text>
+					<view class="flex1"></view>
+					<text class="t-dim" @click="goMine">全部</text>
+				</view>
+				<view class="home-history-grid">
+					<view class="home-history-item" hover-class="focusable-hover" v-for="(item, idx) in history" :key="idx"
+						@click="continuePlay(item)">
+						<image class="home-history-pic" :src="item.pic" mode="aspectFill"
+							v-if="item.pic.length > 0"></image>
+						<view class="home-history-pic home-history-pic-empty" v-else>
+							<text class="t-dim">无图</text>
+						</view>
+						<text class="t-main home-history-name">{{item.name}}</text>
+						<text class="t-dim home-history-ep">{{item.episodeName}}</text>
+					</view>
+				</view>
+			</view>
+
+			<!-- 免责声明 -->
+			<view class="home-footer">
+				<text class="t-dim">本应用仅提供影视信息聚合与搜索技术演示</text>
+				<text class="t-dim">请尊重版权，支持正版平台</text>
+			</view>
+		</scroll-view>
+	</view>
+</template>
+
+<script setup lang="uts">
+	import { HistoryItem } from '../../types/model.uts'
+	import { getHistory } from '../../api/store.uts'
+	import { isVideoSiteUrl } from '../../api/config.uts'
+
+	const keyword = ref('')
+	const history = ref<Array<HistoryItem>>(new Array<HistoryItem>())
+
+	onLoad(() => {
+		history.value = getHistory().slice(0, 8)
+	})
+
+	onPageShow(() => {
+		history.value = getHistory().slice(0, 8)
+	})
+
+	const fillHot = (kw : string) => {
+		uni.navigateTo({ url: `/pages/search/search?kw=${encodeURIComponent(kw)}` })
+	}
+
+	const onSearch = () => {
+		const kw = keyword.value.trim()
+		if (kw.length == 0) {
+			uni.showToast({ title: '请输入内容', icon: 'none' })
+			return
+		}
+		// 视频平台链接 → 解析播放
+		if (isVideoSiteUrl(kw)) {
+			uni.navigateTo({ url: `/pages/parse/parse?url=${encodeURIComponent(kw)}` })
+			return
+		}
+		uni.navigateTo({ url: `/pages/search/search?kw=${encodeURIComponent(kw)}` })
+	}
+
+	const goParseDefault = () => {
+		uni.navigateTo({ url: '/pages/parse/parse' })
+	}
+
+	const goMine = () => {
+		uni.navigateTo({ url: '/pages/mine/mine' })
+	}
+
+	const continuePlay = (item : HistoryItem) => {
+		if (item.playMode == 'parse') {
+			uni.navigateTo({ url: `/pages/parse/parse?url=${encodeURIComponent(item.episodeUrl)}&name=${encodeURIComponent(item.name)}` })
+		} else {
+			uni.navigateTo({
+				url: `/pages/player/player?api=${encodeURIComponent(item.sourceApi)}&id=${item.vodId}&ep=${item.episodeIndex}`
+			})
+		}
+	}
+</script>
+
+<style>
+	.home-scroll {
+		flex: 1;
+	}
+
+	.home-header {
+		flex-direction: row;
+		align-items: center;
+		justify-content: space-between;
+		padding: 32rpx 32rpx 16rpx 32rpx;
+	}
+
+	.home-brand {
+		flex-direction: row;
+		align-items: center;
+	}
+
+	.home-brand-mark {
+		width: 60rpx;
+		height: 60rpx;
+		margin-right: 14rpx;
+	}
+
+	.home-mine-btn {
+		padding: 12rpx 28rpx;
+		border-radius: 16rpx;
+		background-color: #1e222b;
+	}
+
+	.home-search {
+		flex-direction: row;
+		margin: 16rpx 32rpx;
+		padding: 16rpx;
+	}
+
+	.home-input {
+		flex: 1;
+		height: 80rpx;
+		background-color: #262b36;
+		border-radius: 16rpx;
+		padding: 0 24rpx;
+		font-size: 28rpx;
+		color: #ffffff;
+	}
+
+	.home-search-btn {
+		width: 152rpx;
+		margin-left: 16rpx;
+		height: 80rpx;
+	}
+
+	.home-tip {
+		padding: 0 48rpx;
+	}
+
+	.home-quick {
+		flex-direction: row;
+		flex-wrap: wrap;
+		padding: 24rpx 32rpx;
+	}
+
+	.home-section {
+		padding: 16rpx 32rpx;
+	}
+
+	.home-section-title {
+		margin-bottom: 20rpx;
+	}
+
+	.home-history-grid {
+		flex-direction: row;
+		flex-wrap: wrap;
+		justify-content: space-between;
+	}
+
+	.home-history-item {
+		width: 23.5%;
+		margin-bottom: 24rpx;
+	}
+
+	.home-history-pic {
+		width: 100%;
+		height: 248rpx;
+		border-radius: 16rpx;
+		background-color: #262b36;
+	}
+
+	.home-history-pic-empty {
+		align-items: center;
+		justify-content: center;
+	}
+
+	.home-history-name {
+		margin-top: 12rpx;
+		font-size: 24rpx;
+		lines: 1;
+		text-overflow: ellipsis;
+	}
+
+	.home-history-ep {
+		margin-top: 4rpx;
+		font-size: 22rpx;
+		lines: 1;
+		text-overflow: ellipsis;
+	}
+
+	.home-footer {
+		padding: 48rpx 32rpx 80rpx 32rpx;
+		align-items: center;
+	}
+</style>

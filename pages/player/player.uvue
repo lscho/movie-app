@@ -1,0 +1,420 @@
+<template>
+	<view class="player-page">
+		<!-- 状态栏占位 + 顶部导航 -->
+		<view class="status-bar" :style="{ height: statusBarH + 'px' }"></view>
+		<view class="player-topbar row">
+			<view class="player-back" hover-class="focusable-hover" @click="goBack">
+				<text class="player-back-icon">‹</text>
+			</view>
+			<view class="flex1 player-title-box">
+				<text class="t-white player-title">{{vodName}}</text>
+				<text class="t-sub player-sub" v-if="curEpName.length > 0">{{curEpName}} · {{curSrcLabel}}</text>
+			</view>
+			<view class="player-switch" hover-class="chip-hover" @click="switchNextSource" v-if="sources.length > 1">
+				<text class="t-accent">换源</text>
+			</view>
+			<view class="player-switch-placeholder" v-else></view>
+		</view>
+
+		<!-- 播放器 -->
+		<video id="player" class="player-video" :src="playUrl" autoplay controls
+			:poster="vodPic" object-fit="contain" show-center-play-btn
+			@timeupdate="onTimeUpdate" @ended="onEnded" @error="onError" @loadedmetadata="onLoaded"
+			@play="onPlay">
+		</video>
+
+		<!-- 信息与选集 -->
+		<scroll-view class="player-panel" direction="vertical">
+			<view class="player-info card">
+				<text class="t-title">{{vodName}}</text>
+				<view class="row player-info-tags">
+					<text class="tag-accent player-info-tag" v-if="remark.length > 0">{{remark}}</text>
+					<text class="tag player-info-tag" v-if="typeName.length > 0">{{typeName}}</text>
+					<text class="t-dim player-src-label">线路：{{curSrcLabel}}</text>
+				</view>
+
+				<!-- 错误提示 -->
+				<view class="player-error" v-if="playError">
+					<text class="t-sub">播放失败，可能是该线路失效</text>
+					<view class="row player-error-actions">
+						<view class="chip" hover-class="chip-hover" @click="switchNextSource">
+							<text class="t-accent">换线路重试</text>
+						</view>
+						<view class="chip" hover-class="chip-hover" @click="goBack">
+							<text class="t-sub">返回选集</text>
+						</view>
+					</view>
+				</view>
+			</view>
+
+			<!-- 剧集 -->
+			<view class="player-episodes" v-if="episodes.length > 0">
+				<text class="t-main player-sec-title">选集（{{episodes.length}}）</text>
+				<view class="ep-grid">
+					<view :class="epIdx == i ? 'ep-grid-item-active' : 'ep-grid-item'" v-for="(ep, i) in episodes"
+						:key="i" hover-class="ep-hover" @click="switchEp(i)">
+						<text :class="epIdx == i ? 'ep-grid-text-active' : 'ep-grid-text'">{{ep.name}}</text>
+					</view>
+				</view>
+			</view>
+
+			<!-- 线路 -->
+			<view class="player-sources" v-if="sources.length > 1">
+				<text class="t-main player-sec-title">线路</text>
+				<view class="wrap">
+					<view :class="srcIdx == i ? 'chip-active' : 'chip'" v-for="(s, i) in sources" :key="i"
+						hover-class="chip-hover" @click="switchSource(i)">
+						<text :class="srcIdx == i ? 't-accent' : 't-sub'">{{s.label}}（{{s.episodes.length}}集）</text>
+					</view>
+				</view>
+			</view>
+			<view class="player-bottom-space"></view>
+		</scroll-view>
+	</view>
+</template>
+
+<script setup lang="uts">
+	import { VodItem, PlaySource, Episode } from '../../types/model.uts'
+	import { HistoryItem } from '../../types/model.uts'
+
+	import { fetchVod } from '../../api/vod.uts'
+	import { pushHistory, saveProgress, getProgress } from '../../api/store.uts'
+
+	const vod = ref<VodItem | null>(null)
+	const vodName = ref('加载中…')
+	const vodPic = ref('')
+	const remark = ref('')
+	const typeName = ref('')
+	const sources = ref<Array<PlaySource>>(new Array<PlaySource>())
+	const srcIdx = ref(0)
+	const epIdx = ref(0)
+	const playUrl = ref('')
+	const playError = ref(false)
+	let videoContext : VideoContext | null = null
+	let apiBase = ''
+	let vodId = ''
+	let vodKey = ''
+	let wantEp = 0
+	let seekTo = -1.0
+	let lastSave = 0
+	let pendingSeek = false
+	let autoSwitching = false   // 正在自动换线路中
+	let triedSrc : string[] = [] // 本集已试过的线路标识
+	const statusBarH = ref(44)
+
+	const episodes = computed((): Array<Episode> => {
+		const v = vod.value
+		if (v == null) return new Array<Episode>()
+		if (srcIdx.value >= v.sources.length) return new Array<Episode>()
+		return v.sources[srcIdx.value].episodes
+	})
+
+	const curEpName = computed((): string => {
+		const eps = episodes.value
+		if (eps.length == 0) return ''
+		return eps[epIdx.value].name
+	})
+
+	const curSrcLabel = computed((): string => {
+		const v = vod.value
+		if (v == null || v.sources.length == 0) return ''
+		return v.sources[srcIdx.value].label
+	})
+
+	onLoad((options : OnLoadOptions) => {
+		apiBase = decodeURIComponent(options['api'] ?? '')
+		vodId = options['id'] ?? ''
+		wantEp = Number(options['ep'] ?? '0')
+		const s = options['src'] ?? '0'
+		srcIdx.value = Number(s)
+		vodKey = `${apiBase}|${vodId}`
+		statusBarH.value = uni.getWindowInfo().statusBarHeight
+		loadData()
+	})
+
+	onReady(() => {
+		videoContext = uni.createVideoContext('player')
+	})
+
+	onUnload(() => {
+		// 进度已在timeupdate中周期保存，页面卸载无需额外处理
+	})
+
+	const loadData = () => {
+		fetchVod(apiBase, `ids=${vodId}`, true, (res) => {
+			if (res.code != 0 || res.list.length == 0) {
+				vodName.value = '加载失败'
+				playError.value = true
+				return
+			}
+			const v = res.list[0]
+			vod.value = v
+			vodName.value = v.name
+			vodPic.value = v.pic
+			remark.value = v.remark
+			typeName.value = v.typeName
+			if (srcIdx.value >= v.sources.length) srcIdx.value = 0
+			if (wantEp >= episodes.value.length) wantEp = 0
+			epIdx.value = wantEp
+			startPlay(wantEp, true)
+		})
+	}
+
+	const startPlay = (ep : number, resume : boolean) => {
+		const v = vod.value
+		if (v == null || v.sources.length == 0) return
+		const eps = v.sources[srcIdx.value].episodes
+		if (ep >= eps.length) return
+		epIdx.value = ep
+		playUrl.value = '' // 先清空，强制重载
+		seekTo = -1.0
+		const url = eps[ep].url
+		if (resume) {
+			const p = getProgress(vodKey, ep)
+			if (p != null && p.position > 30 && (p.duration <= 0 || p.position < p.duration - 60)) {
+				seekTo = p.position
+			}
+		}
+		// 下一帧再赋值，保证 src 变更生效
+		setTimeout(() => {
+			playUrl.value = url
+			playError.value = false
+			recordHistory(url)
+		}, 50)
+	}
+
+	const recordHistory = (epUrl : string) => {
+		const v = vod.value
+		if (v == null) return
+		const eps = v.sources[srcIdx.value].episodes
+		const item = new HistoryItem()
+		item.key = vodKey
+		item.vodId = vodId
+		item.sourceApi = apiBase
+		item.name = v.name
+		item.pic = v.pic
+		item.episodeIndex = epIdx.value
+		item.episodeName = eps[epIdx.value].name
+		item.episodeUrl = epUrl
+		item.flag = v.sources[srcIdx.value].flag
+		item.playMode = 'vod'
+		item.updateTime = Date.now()
+		pushHistory(item)
+	}
+
+	const onLoaded = (_ : UniVideoLoadedMetadataEvent) => {
+		// 元数据加载后跳转续播位置
+		if (seekTo > 0 && videoContext != null) {
+			pendingSeek = true
+			videoContext!.seek(Number(seekTo))
+			seekTo = -1.0
+		}
+	}
+
+	const onPlay = (_ : UniEvent) => {
+		// 播放成功：结束自动换线状态；当前线路视为可用，清空试线记录
+		autoSwitching = false
+		triedSrc = []
+	}
+
+	const onTimeUpdate = (e : UniVideoTimeUpdateEvent) => {
+		// 跳转期间不保存，避免把片头位置写进记录
+		if (pendingSeek) {
+			if (e.detail.currentTime > 5) pendingSeek = false
+			return
+		}
+		const now = Date.now()
+		// 每5秒保存一次进度
+		if (now - lastSave > 5000) {
+			lastSave = now
+			saveProgress(vodKey, epIdx.value, e.detail.currentTime, e.detail.duration)
+		}
+	}
+
+	const onEnded = (_ : UniEvent) => {
+		// 自动连播下一集
+		const eps = episodes.value
+		if (epIdx.value + 1 < eps.length) {
+			uni.showToast({ title: '自动播放下一集', icon: 'none' })
+			startPlay(epIdx.value + 1, false)
+		}
+	}
+
+	const onError = (_ : UniVideoErrorEvent) => {
+		// 播放失败：自动切换到未试过的下一条线路
+		const v = vod.value
+		if (v == null || v.sources.length <= 1) {
+			playError.value = true
+			return
+		}
+		const curFlag = v.sources[srcIdx.value].flag
+		if (triedSrc.indexOf(curFlag) < 0) triedSrc.push(curFlag)
+		const next = findNextSource()
+		if (next < 0) {
+			// 所有线路都试过了
+			autoSwitching = false
+			playError.value = true
+			uni.showToast({ title: '所有线路均播放失败，请稍后重试', icon: 'none' })
+			return
+		}
+		autoSwitching = true
+		uni.showToast({ title: `「${v.sources[srcIdx.value].label}」失败，切换到${v.sources[next].label}`, icon: 'none' })
+		srcIdx.value = next
+		startPlay(epIdx.value, false)
+	}
+
+	// 找一条没试过的线路，返回索引；没有返回 -1
+	const findNextSource = () : number => {
+		const v = vod.value
+		if (v == null) return -1
+		for (let i = 0; i < v.sources.length; i++) {
+			if (i == srcIdx.value) continue
+			if (triedSrc.indexOf(v.sources[i].flag) < 0) return i
+		}
+		return -1
+	}
+
+	const switchEp = (i : number) => {
+		// 手动切集：重置自动换线记录
+		triedSrc = []
+		autoSwitching = false
+		startPlay(i, true)
+	}
+
+	const switchSource = (i : number) => {
+		const v = vod.value
+		if (v == null) return
+		// 手动换线路：重置自动换线记录
+		triedSrc = []
+		autoSwitching = false
+		srcIdx.value = i
+		// 换线路后尽量保持同一集
+		startPlay(epIdx.value < v.sources[i].episodes.length ? epIdx.value : 0, false)
+	}
+
+	const switchNextSource = () => {
+		const v = vod.value
+		if (v == null || v.sources.length <= 1) return
+		triedSrc = []
+		autoSwitching = false
+		const next = (srcIdx.value + 1) % v.sources.length
+		switchSource(next)
+	}
+
+	const goBack = () => {
+		uni.navigateBack()
+	}
+</script>
+
+<style>
+	.player-page {
+		flex: 1;
+		background-color: #0d0f14;
+	}
+
+	.player-topbar {
+		height: 104rpx;
+		padding: 0 24rpx;
+		background-color: #12141a;
+	}
+
+	.player-back {
+		width: 128rpx;
+		height: 72rpx;
+		border-radius: 36rpx;
+		background-color: #262b36;
+		align-items: center;
+		justify-content: center;
+	}
+
+	.player-back-icon {
+		color: #ffffff;
+		font-size: 52rpx;
+		line-height: 72rpx;
+		margin-top: -8rpx;
+	}
+
+	.player-title-box {
+		flex-direction: column;
+		align-items: center;
+		justify-content: center;
+	}
+
+	.player-title {
+		font-size: 32rpx;
+		font-weight: bold;
+		lines: 1;
+		text-overflow: ellipsis;
+	}
+
+	.player-sub {
+		margin-top: 4rpx;
+		font-size: 22rpx;
+		lines: 1;
+		text-overflow: ellipsis;
+	}
+
+	.player-switch {
+		width: 128rpx;
+		height: 72rpx;
+		border-radius: 36rpx;
+		background-color: #16304f;
+		align-items: center;
+		justify-content: center;
+	}
+
+	.player-switch-placeholder {
+		width: 128rpx;
+		height: 72rpx;
+	}
+
+	.player-video {
+		width: 100%;
+		height: 440rpx;
+		background-color: #000000;
+	}
+
+	.player-panel {
+		flex: 1;
+		padding: 24rpx 32rpx;
+	}
+
+	.player-info-tags {
+		margin-top: 16rpx;
+	}
+
+	.player-info-tag {
+		margin-right: 12rpx;
+	}
+
+	.player-src-label {
+		margin-left: 8rpx;
+	}
+
+	.player-error {
+		margin-top: 24rpx;
+		padding: 20rpx;
+		border-radius: 16rpx;
+		background-color: #33202a;
+	}
+
+	.player-error-actions {
+		margin-top: 16rpx;
+	}
+
+	.player-sec-title {
+		margin-bottom: 20rpx;
+	}
+
+	.player-episodes {
+		margin-top: 12rpx;
+	}
+
+	.player-sources {
+		margin-top: 12rpx;
+	}
+
+	.player-bottom-space {
+		height: 80rpx;
+	}
+</style>

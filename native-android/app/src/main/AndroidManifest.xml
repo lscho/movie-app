@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+    <!-- 兼容 TV / 无触屏设备 -->
+    <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
+    <uses-feature android:name="android.software.leanback" android:required="false" />
+
+    <application
+        android:name="io.dcloud.uniappxv.UniApplication"
+        android:allowBackup="true"
+        android:banner="@drawable/tv_banner"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:largeHeap="true"
+        android:supportsRtl="true"
+        android:usesCleartextTraffic="true"
+        android:theme="@style/Theme.AppCompat.DayNight"
+        android:extractNativeLibs="false"
+        tools:replace="android:allowBackup">
+
+        <activity
+            android:name="io.dcloud.uniappxv.UniAppActivity"
+            android:configChanges="orientation|keyboardHidden|screenSize|mcc|mnc|fontScale|keyboard|smallestScreenSize|screenLayout|uiMode"
+            android:exported="true"
+            android:label="@string/app_name"
+            android:theme="@style/Theme.AppCompat.DayNight.NoActionBar"
+            android:windowSoftInputMode="adjustResize"
+            tools:replace="android:label,android:exported,android:theme,android:configChanges,android:windowSoftInputMode">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+
+                <category android:name="android.intent.category.LAUNCHER" />
+                <!-- Android TV 桌面入口 -->
+                <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <meta-data
+            android:name="DCLOUD_UNI_APPID"
+            android:value="__UNI__F871D3B" />
+        <meta-data
+            android:name="DCLOUD_CHANNEL"
+            android:value="default" />
+    </application>
+
+</manifest>

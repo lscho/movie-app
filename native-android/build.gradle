@@ -1,0 +1,13 @@
+// 全民影视 Android 本地打包工程（uni-app x 蒸汽模式离线 SDK 5.26）
+buildscript {
+    dependencies {
+        classpath(files('dcloud-sdk/plugins/uts-kotlin-compiler-plugin-0.0.1.jar'))
+        classpath(files('dcloud-sdk/plugins/uts-kotlin-gradle-plugin-0.0.1.jar'))
+        classpath(files('dcloud-sdk/plugins/auto-register-gradle-plugin-1.0.0.jar'))
+    }
+}
+
+plugins {
+    alias(libs.plugins.android.application) apply false
+    alias(libs.plugins.kotlin.android) apply false
+}
