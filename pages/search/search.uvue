@@ -1,19 +1,12 @@
 <template>
 	<view class="page">
-		<!-- 搜索栏 -->
-		<view class="search-bar row">
-			<input class="search-input" v-model="keyword" placeholder="输入影片名称" placeholder-style="color:#6b7280"
-				confirm-type="search" focus @confirm="doSearch" />
-			<view class="search-btn btn-primary" hover-class="btn-primary-hover" @click="doSearch">
-				<text class="t-white">搜索</text>
-			</view>
-		</view>
+		<!-- 状态行 -->
 		<view class="search-status">
 			<text class="t-dim" v-if="searching">正在搜索 {{doneCount}}/{{totalSources}} 个资源站…</text>
 			<text class="t-dim" v-else-if="items.length > 0">共 {{items.length}} 条结果</text>
 		</view>
 
-		<!-- 结果列表 -->
+		<!-- 结果列表（按资源站配置顺序分组排列） -->
 		<list-view class="search-list" v-if="items.length > 0">
 			<list-item class="search-item-cell" v-for="(item, idx) in items" :key="item.sourceApi + '_' + item.vodId">
 				<view class="search-item row" hover-class="search-item-hover" @click="goDetail(item)">
@@ -39,7 +32,7 @@
 			<text class="t-sub">未找到相关影片，换个关键词试试</text>
 		</view>
 		<view class="search-empty" v-if="!searching && items.length == 0 && !searched">
-			<text class="t-dim">输入片名，多资源站聚合搜索</text>
+			<text class="t-dim">请从首页输入片名搜索</text>
 		</view>
 	</view>
 </template>
@@ -56,29 +49,23 @@
 	const searched = ref(false)
 	const doneCount = ref(0)
 	const totalSources = ref(0)
-	let seenKeys : string[] = []
 
 	onLoad((options : OnLoadOptions) => {
 		const kw = options['kw'] ?? ''
-		if (kw.length > 0) {
-			keyword.value = kw
-			doSearch()
-		}
+		if (kw.length == 0) return
+		keyword.value = kw
+		doSearch()
 	})
 
 	const doSearch = () => {
 		const kw = keyword.value.trim()
-		if (kw.length == 0) {
-			uni.showToast({ title: '请输入片名', icon: 'none' })
-			return
-		}
+		if (kw.length == 0) return
 		const allSources = getSources()
 		const sources : Array<SourceApi> = new Array<SourceApi>()
 		for (let i = 0; i < allSources.length; i++) {
 			if (allSources[i].enabled) sources.push(allSources[i])
 		}
 		items.value = new Array<VodItem>()
-		seenKeys = []
 		doneCount.value = 0
 		totalSources.value = sources.length
 		if (sources.length == 0) {
@@ -87,24 +74,46 @@
 		}
 		searching.value = true
 		searched.value = true
+
+		// 每个资源站一个桶，按配置顺序合并（无损云排最前）
+		const buckets : Array<Array<VodItem>> = new Array<Array<VodItem>>()
+		for (let i = 0; i < sources.length; i++) {
+			buckets.push(new Array<VodItem>())
+		}
+
 		const agg = new SearchAggregator(sources, kw)
 		agg.search((list, done, total) => {
-			// 按片名+年份去重合并
-			for (let i = 0; i < list.length; i++) {
-				const it = list[i]
-				const k = `${it.name}_${it.year}`
-				let dup = false
-				for (let j = 0; j < seenKeys.length; j++) {
-					if (seenKeys[j] == k) {
-						dup = true
+			// 本批结果归入对应资源站的桶
+			if (list.length > 0) {
+				const sid = list[0].sourceId
+				for (let i = 0; i < sources.length; i++) {
+					if (sources[i].id == sid) {
+						buckets[i] = list
 						break
 					}
 				}
-				if (dup) continue
-				seenKeys.push(k)
-				items.value.push(it)
 			}
 			doneCount.value = done
+			// 重建：按资源站顺序合并 + 片名去重
+			const merged : Array<VodItem> = new Array<VodItem>()
+			const seen : string[] = []
+			for (let i = 0; i < buckets.length; i++) {
+				for (let j = 0; j < buckets[i].length; j++) {
+					const it = buckets[i][j]
+					const k = `${it.name}_${it.year}`
+					let dup = false
+					for (let s = 0; s < seen.length; s++) {
+						if (seen[s] == k) {
+							dup = true
+							break
+						}
+					}
+					if (dup) continue
+					seen.push(k)
+					merged.push(it)
+				}
+			}
+			items.value = merged
 			if (done >= total) {
 				searching.value = false
 			}
@@ -119,28 +128,8 @@
 </script>
 
 <style>
-	.search-bar {
-		padding: 20rpx 32rpx;
-	}
-
-	.search-input {
-		flex: 1;
-		height: 76rpx;
-		background-color: #262b36;
-		border-radius: 16rpx;
-		padding: 0 24rpx;
-		font-size: 28rpx;
-		color: #ffffff;
-	}
-
-	.search-btn {
-		width: 140rpx;
-		margin-left: 16rpx;
-		height: 76rpx;
-	}
-
 	.search-status {
-		padding: 4rpx 36rpx 16rpx 36rpx;
+		padding: 16rpx 36rpx;
 	}
 
 	.search-list {

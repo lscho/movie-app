@@ -16,8 +16,11 @@
 			<view class="player-switch-placeholder" v-else></view>
 		</view>
 
-		<!-- 播放器 -->
-		<video id="player" class="player-video" :src="playUrl" autoplay controls
+		<!-- 播放器：拿到真实地址后才创建组件，避免空src初始化与早赋值竞态 -->
+		<view class="player-video player-video-empty" v-if="playUrl.length == 0">
+			<text class="t-dim">加载中…</text>
+		</view>
+		<video id="player" class="player-video" v-if="playUrl.length > 0" :src="playUrl" autoplay controls
 			:poster="vodPic" object-fit="contain" show-center-play-btn
 			@timeupdate="onTimeUpdate" @ended="onEnded" @error="onError" @loadedmetadata="onLoaded"
 			@play="onPlay">
@@ -35,7 +38,7 @@
 
 				<!-- 错误提示 -->
 				<view class="player-error" v-if="playError">
-					<text class="t-sub">播放失败，可能是该线路失效</text>
+					<text class="t-sub">播放失败{{playErrMsg.length > 0 ? `（${playErrMsg}）` : ''}}，可能是该线路失效</text>
 					<view class="row player-error-actions">
 						<view class="chip" hover-class="chip-hover" @click="switchNextSource">
 							<text class="t-accent">换线路重试</text>
@@ -90,6 +93,9 @@
 	const epIdx = ref(0)
 	const playUrl = ref('')
 	const playError = ref(false)
+	const playErrMsg = ref('')
+	let curPos = 0.0
+	let curDur = 0.0
 	let videoContext : VideoContext | null = null
 	let apiBase = ''
 	let vodId = ''
@@ -100,6 +106,8 @@
 	let pendingSeek = false
 	let autoSwitching = false   // 正在自动换线路中
 	let triedSrc : string[] = [] // 本集已试过的线路标识
+	let pageReady = false       // 页面渲染就绪标志
+	let pendingUrl = ''         // 就绪前挂起的播放地址
 	const statusBarH = ref(44)
 
 	const episodes = computed((): Array<Episode> => {
@@ -133,12 +141,39 @@
 	})
 
 	onReady(() => {
-		videoContext = uni.createVideoContext('player')
+		pageReady = true
+		// 网络回调先于页面就绪时，挂起的地址在此应用
+		if (pendingUrl.length > 0) {
+			const u = pendingUrl
+			pendingUrl = ''
+			applyUrl(u)
+		}
 	})
 
 	onUnload(() => {
 		// 进度已在timeupdate中周期保存，页面卸载无需额外处理
 	})
+
+	// 懒创建视频上下文：video 组件由 v-if 控制，挂载时机晚于 onReady
+	const ensureContext = () => {
+		if (videoContext == null) {
+			videoContext = uni.createVideoContext('player')
+		}
+	}
+
+	const applyUrl = (url : string) => {
+		playUrl.value = url
+		playError.value = false
+		playErrMsg.value = ''
+		recordHistory(url)
+		// 视频组件随 v-if 挂载后创建上下文并显式起播（部分设备 autoplay 不生效）
+		setTimeout(() => {
+			ensureContext()
+			if (!playError.value) {
+				videoContext!.play()
+			}
+		}, 400)
+	}
 
 	const loadData = () => {
 		fetchVod(apiBase, `ids=${vodId}`, true, (res) => {
@@ -166,21 +201,23 @@
 		const eps = v.sources[srcIdx.value].episodes
 		if (ep >= eps.length) return
 		epIdx.value = ep
-		playUrl.value = '' // 先清空，强制重载
 		seekTo = -1.0
-		const url = eps[ep].url
+		let url = eps[ep].url
 		if (resume) {
 			const p = getProgress(vodKey, ep)
 			if (p != null && p.position > 30 && (p.duration <= 0 || p.position < p.duration - 60)) {
 				seekTo = p.position
 			}
 		}
-		// 下一帧再赋值，保证 src 变更生效
-		setTimeout(() => {
-			playUrl.value = url
-			playError.value = false
-			recordHistory(url)
-		}, 50)
+		// 同一地址重试时加时间戳强制重载（不采用清空src的方式，避免原生播放器快速重建引发崩溃）
+		if (url == playUrl.value) {
+			url = url + (url.indexOf('?') > 0 ? '&' : '?') + '_r=' + Date.now().toString()
+		}
+		if (!pageReady) {
+			pendingUrl = url   // 页面未就绪：等 onReady 再挂载视频，规避早赋值竞态
+			return
+		}
+		applyUrl(url)
 	}
 
 	const recordHistory = (epUrl : string) => {
@@ -204,7 +241,8 @@
 
 	const onLoaded = (_ : UniVideoLoadedMetadataEvent) => {
 		// 元数据加载后跳转续播位置
-		if (seekTo > 0 && videoContext != null) {
+		if (seekTo > 0) {
+			ensureContext()
 			pendingSeek = true
 			videoContext!.seek(Number(seekTo))
 			seekTo = -1.0
@@ -218,6 +256,8 @@
 	}
 
 	const onTimeUpdate = (e : UniVideoTimeUpdateEvent) => {
+		curPos = e.detail.currentTime
+		curDur = e.detail.duration
 		// 跳转期间不保存，避免把片头位置写进记录
 		if (pendingSeek) {
 			if (e.detail.currentTime > 5) pendingSeek = false
@@ -232,7 +272,13 @@
 	}
 
 	const onEnded = (_ : UniEvent) => {
-		// 自动连播下一集
+		// 假ended防护：流异常中断时 currentTime 远小于 duration，此时按错误处理，
+		// 否则会疯狂循环"自动下一集"导致页面被冲垮
+		if (curDur > 0 && curPos < curDur - 20) {
+			handlePlayFailure('播放流中断')
+			return
+		}
+		// 真正播完：自动连播下一集
 		const eps = episodes.value
 		if (epIdx.value + 1 < eps.length) {
 			uni.showToast({ title: '自动播放下一集', icon: 'none' })
@@ -240,8 +286,13 @@
 		}
 	}
 
-	const onError = (_ : UniVideoErrorEvent) => {
-		// 播放失败：自动切换到未试过的下一条线路
+	const onError = (e : UniVideoErrorEvent) => {
+		handlePlayFailure(`错误码${e.detail.errCode}`)
+	}
+
+	// 统一的播放失败处理：记录原因 → 自动换线 → 全部失败则展示错误卡片
+	const handlePlayFailure = (reason : string) => {
+		playErrMsg.value = reason
 		const v = vod.value
 		if (v == null || v.sources.length <= 1) {
 			playError.value = true
@@ -372,6 +423,11 @@
 		width: 100%;
 		height: 440rpx;
 		background-color: #000000;
+	}
+
+	.player-video-empty {
+		align-items: center;
+		justify-content: center;
 	}
 
 	.player-panel {

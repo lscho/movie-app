@@ -20,7 +20,9 @@ set -Eeuo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 UNI_PROJECT="${UNI_PROJECT:-$SCRIPT_DIR}"
 ANDROID_PROJ="${ANDROID_PROJ:-$UNI_PROJECT/native-android}"
-SDK_ROOT="${DCLOUD_SDK_ROOT:-$ANDROID_PROJ/dcloud-sdk}"
+# SDK 存放于系统应用支持目录（稳定、不易被误删）；可用 DCLOUD_SDK_ROOT 覆盖；缺失时自动下载
+SDK_ROOT="${DCLOUD_SDK_ROOT:-$HOME/Library/Application Support/QuanMinMovie/dcloud-sdk}"
+SDK_URL="https://web-ext-storage.dcloud.net.cn/uni-app-x/sdk/Android-Vapor/Android-uni-app-x-vapor-SDK@101163-5.26.zip"
 HBX_CLI="${HBX_CLI:-/Applications/HBuilderX.app/Contents/MacOS/cli}"
 JBR_JAVA="${JBR_JAVA:-/Applications/Android Studio.app/Contents/jbr/Contents/Home}"
 ANDROID_SDK="${ANDROID_SDK:-${ANDROID_HOME:-$HOME/Library/Android/sdk}}"
@@ -74,12 +76,21 @@ VERSION_CODE="$(read_json "$MANIFEST" versionCode || true)"
 
 # ---------- 环境检查 ----------
 [[ -d "$ANDROID_PROJ/app" ]] || die "安卓工程不存在: $ANDROID_PROJ"
-# SDK 符号链接不存在则自动创建（SDK 本体在仓库外，不入库）
-if [[ ! -e "$ANDROID_PROJ/dcloud-sdk" ]]; then
-  [[ -d "$SDK_ROOT" ]] || die "离线SDK不存在: $SDK_ROOT（设置 DCLOUD_SDK_ROOT 或先下载 5.26 版SDK）"
-  ln -sfn "$SDK_ROOT" "$ANDROID_PROJ/dcloud-sdk"
+# SDK 自愈：缺失则自动下载到系统应用支持目录（约240MB，一次性）
+if [[ ! -e "$SDK_ROOT/SDK/libs/app-runtime-release.aar" ]]; then
+  warn "离线SDK缺失，开始自动下载（约240MB，一次性）…"
+  DL_DIR="$(dirname "$SDK_ROOT")"
+  mkdir -p "$DL_DIR"
+  curl -sL --fail -o "$DL_DIR/dcloud-sdk-download.zip" "$SDK_URL" || die "SDK 下载失败：$SDK_URL"
+  unzip -q -o "$DL_DIR/dcloud-sdk-download.zip" -d "$DL_DIR/tmp-sdk"
+  rm -rf "$SDK_ROOT"
+  mv "$DL_DIR/tmp-sdk/Android-uni-app-x-vapor-SDK@"* "$SDK_ROOT"
+  rm -rf "$DL_DIR/tmp-sdk" "$DL_DIR/dcloud-sdk-download.zip" "$DL_DIR/__MACOSX" 2>/dev/null || true
+  [[ -e "$SDK_ROOT/SDK/libs/app-runtime-release.aar" ]] || die "SDK 解压异常: $SDK_ROOT"
+  ok "SDK 已就位: $SDK_ROOT"
 fi
-[[ -e "$SDK_ROOT/SDK/libs/app-runtime-release.aar" ]] || die "SDK 不完整: $SDK_ROOT（缺 SDK/libs）"
+# 符号链接指向真实SDK（gradle fileTree 需要真实路径，脚本内已做 canonical 处理）
+ln -sfn "$SDK_ROOT" "$ANDROID_PROJ/dcloud-sdk"
 [[ -x "$HBX_CLI" ]] || die "未找到 HBuilderX CLI: $HBX_CLI"
 [[ -d "$ANDROID_SDK" ]] || die "找不到 Android SDK: $ANDROID_SDK"
 export ANDROID_HOME="$ANDROID_SDK"
