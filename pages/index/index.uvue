@@ -1,20 +1,23 @@
 <template>
 	<view class="page">
-		<scroll-view class="home-scroll" direction="vertical">
+		<view class="home-top">
 			<view class="home-header">
 				<view class="home-brand">
 					<image class="home-brand-mark" src="/static/brand/logo-mark.png" mode="aspectFit"></image>
-					<text class="t-title">全民影视</text>
+					<text class="t-title">超超影视</text>
 				</view>
 				<view class="home-mine-btn" hover-class="focusable-hover" @click="goMine">
 					<text class="t-accent">我的</text>
 				</view>
 			</view>
 
-			<!-- 搜索区 -->
+			<!-- 搜索区：放在 scroll-view 外，避免 Android 上滚动容器吞掉输入框焦点 -->
 			<view class="home-search card">
-				<input class="home-input" v-model="keyword" placeholder="输入影片名称或粘贴VIP视频链接"
-					placeholder-style="color:#6b7280" confirm-type="search" @confirm="onSearch" />
+				<view class="home-input-wrap flex1" @click="focusSearch">
+					<input id="home-input" class="home-input" v-model="keyword"
+						placeholder="输入影片名称或粘贴VIP视频链接" placeholder-style="color:#6b7280"
+						confirm-type="search" @confirm="onSearch" @click="focusSearch" />
+				</view>
 				<view class="home-search-btn btn-primary" hover-class="btn-primary-hover" @click="onSearch">
 					<text class="t-white">搜索</text>
 				</view>
@@ -38,7 +41,9 @@
 					<text class="t-sub">流浪地球</text>
 				</view>
 			</view>
+		</view>
 
+		<scroll-view class="home-scroll" direction="vertical">
 			<!-- 继续观看 -->
 			<view class="home-section" v-if="history.length > 0">
 				<view class="row">
@@ -103,6 +108,14 @@
 		uni.navigateTo({ url: `/pages/search/search?kw=${encodeURIComponent(kw)}` })
 	}
 
+	// 部分 Android 机型点击 input 不会主动唤起输入法，这里显式聚焦
+	const focusSearch = () => {
+		const el = uni.getElementById('home-input') as UniInputElement | null
+		if (el != null) {
+			el.focus()
+		}
+	}
+
 	const goParseDefault = () => {
 		uni.navigateTo({ url: '/pages/parse/parse' })
 	}
@@ -157,8 +170,12 @@
 		padding: 16rpx;
 	}
 
+	.home-input-wrap {
+		height: 80rpx;
+	}
+
 	.home-input {
-		flex: 1;
+		width: 100%;
 		height: 80rpx;
 		background-color: #262b36;
 		border-radius: 16rpx;

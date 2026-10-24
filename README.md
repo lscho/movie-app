@@ -1,4 +1,4 @@
-# 全民影视（uni-app x 蒸汽模式）
+# 超超影视（uni-app x 蒸汽模式）
 
 参照 daga.cc 机制实现的影视聚合搜索与播放 App，采用 **uni-app x + 蒸汽模式（Vapor）**，目标平台为 Android（iOS 可按需启用）。
 

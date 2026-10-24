@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ============================================================
-# 全民影视 · 一键本地打包脚本 v2
+# 超超影视 · 一键本地打包脚本 v2
 # 流程：HBuilderX 生成资源(严格校验/重试) → 同步宿主(版本/appid/app名) →
 #       gradle 构建(版本号注入) → release 走 apksigner 独立签名校验 → 产物报告
 # 用法:
@@ -193,6 +193,7 @@ for m in $MODULES; do
   [[ -f "$SDK_ROOT/SDK/libs/$aar" ]] || warn "资源声明模块 ${m}，SDK 缺少 ${aar}（运行时异常时需补依赖）"
 done
 grep -q 'media3-exoplayer' "$ANDROID_PROJ/app/build.gradle" || warn "宿主缺少 media3/exoplayer 依赖，m3u8 播放可能崩溃"
+grep -q 'uni-screenBrightness-release.aar' "$ANDROID_PROJ/app/build.gradle" || warn "宿主缺少 uni-screenBrightness 依赖，video 组件起播时会崩溃"
 ok "资源/appid/app名/模块自检完成"
 
 # ---------- 3/4 gradle 构建 ----------
@@ -214,6 +215,29 @@ else
   fi
 fi
 [[ -n "$APK" && -f "$APK" ]] || die "未找到 gradle 产物 APK，日志: $LOG"
+
+# release 瘦身：AAR 内的 dev/非 arm64 运行时快照无法用 gradle assets 过滤，打包后剔除
+STRIP_APK=""
+if [[ "$BUILD_TYPE" == "release" ]]; then
+  STRIP_TMP="${APK%.apk}-stripped.apk"
+  cp "$APK" "$STRIP_TMP"
+  if zip -q -d "$STRIP_TMP" \
+      'assets/uni-app-x-framework-vapor-dev' \
+      'assets/uni-app-x-framework-vapor-dev-arm.snapshot' \
+      'assets/uni-app-x-framework-vapor-dev-arm64.snapshot' \
+      'assets/uni-app-x-framework-vapor-dev-x86_64.snapshot' \
+      'assets/uni-app-x-framework-vapor-arm.snapshot' \
+      'assets/uni-app-x-framework-vapor-x86_64.snapshot' 2>>"$LOG"; then
+    STRIP_APK="${APK%.apk}-stripped-aligned.apk"
+    "$ZIPALIGN" -f 4 "$STRIP_TMP" "$STRIP_APK" >>"$LOG" 2>&1 || die "APK 瘦身后对齐失败"
+    rm -f "$STRIP_TMP"
+    APK="$STRIP_APK"
+    log "已剔除 dev/非 arm64 运行时快照"
+  else
+    rm -f "$STRIP_TMP"
+    warn "运行时快照剔除失败，保留原包"
+  fi
+fi
 
 # ---------- 4/4 签名（release）与校验 ----------
 if [[ "$BUILD_TYPE" == "release" ]]; then
@@ -255,6 +279,7 @@ OUTPUT="${OUTPUT:-$UNI_PROJECT/unpackage/apk/quanmin-movie-v$VERSION_NAME-$(date
 mkdir -p "$(dirname "$OUTPUT")"
 cp "$APK" "$OUTPUT"
 [[ "${APK##*/}" == *"-signed-tmp.apk" ]] && rm -f "$APK"
+[[ -z "$STRIP_APK" ]] || rm -f "$STRIP_APK"
 
 SHA256="$(shasum -a 256 "$OUTPUT" | awk '{print $1}')"
 SIZE="$(du -h "$OUTPUT" | cut -f1)"

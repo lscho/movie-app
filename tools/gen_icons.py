@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""「全民影视」品牌标识生成器
+"""「超超影视」品牌标识生成器
 
 设计说明
 --------
@@ -158,7 +158,7 @@ def adaptive_background(size=432, render=864):
 
 # ---------------- 字标 ----------------
 FONT_PATH = '/System/Library/Fonts/Hiragino Sans GB.ttc'
-NAME = '全民影视'
+NAME = '超超影视'
 
 
 def load_font(px):
@@ -222,7 +222,7 @@ def spec_board(path):
     f_title, f_h, f_sm, f_tiny = load_font(54), load_font(24), load_font(20), load_font(17)
     GREY, DARK = (112, 120, 134, 255), (22, 26, 36, 255)
 
-    d.text((72, 60), '全民影视 · 品牌标识', font=f_title, fill=DARK)
+    d.text((72, 60), '超超影视 · 品牌标识', font=f_title, fill=DARK)
     d.text((74, 132), '屏幕框 + 播放字形 · 渐变 #3D9BFF → #7C5CFF · 圆角与 App 卡片同源', font=f_sm, fill=GREY)
 
     # A 主图标

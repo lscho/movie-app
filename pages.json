@@ -3,7 +3,7 @@
 		{
 			"path": "pages/index/index",
 			"style": {
-				"navigationBarTitleText": "全民影视"
+				"navigationBarTitleText": "超超影视"
 			}
 		},
 		{
@@ -41,7 +41,7 @@
 	],
 	"globalStyle": {
 		"navigationBarTextStyle": "white",
-		"navigationBarTitleText": "全民影视",
+		"navigationBarTitleText": "超超影视",
 		"navigationBarBackgroundColor": "#1a1c22",
 		"backgroundColor": "#12141a",
 		"pageOrientation": "auto",

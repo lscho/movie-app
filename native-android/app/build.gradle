@@ -50,7 +50,8 @@ android {
         pickFirst 'lib/*/libstlport_shared.so'
         pickFirst 'lib/*/libc++_shared.so'
         jniLibs {
-            useLegacyPackaging false
+            // 原生库压缩进 APK（安装时解压），安装包可减小约 25MB
+            useLegacyPackaging true
         }
     }
 }
@@ -89,7 +90,10 @@ dependencies {
                     // 本应用用到的能力模块
                     'uni-network-release.aar',
                     'uni-getNetworkType-release.aar',
+                    'uni-form-release.aar',
                     'uni-video-release.aar',
+                    // video 播放时框架会调用 setKeepScreenOn，缺少该模块会在 onPlay 回调中崩溃
+                    'uni-screenBrightness-release.aar',
                     'uni-web-view-release.aar'
             ]
     )

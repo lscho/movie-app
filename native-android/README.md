@@ -1,4 +1,4 @@
-# 全民影视 · Android 本地打包工程
+# 超超影视 · Android 本地打包工程
 
 基于 **uni-app x 蒸汽模式离线 SDK 5.26**（`Android-uni-app-x-vapor-SDK@101163-5.26`，与 HBuilderX 5.26.2026091802 完全一致）搭建的本地打包（离线打包）工程。
 
