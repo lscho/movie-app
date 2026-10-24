@@ -226,6 +226,13 @@ if [[ "$BUILD_TYPE" == "release" ]]; then
   APK="$SIGNED"
 fi
 
+# dex 完整性门禁：SDK 运行时类必须存在，防止 fileTree 路径失效时产出"空壳APK"静默成功
+# 注意：不能用 grep -q（提前退出会触发 unzip 的 SIGPIPE，在 pipefail 下误报），用 -c 读完整流
+DCLOUD_CNT="$(unzip -p "$APK" 'classes*.dex' 2>/dev/null | grep -ac 'io/dcloud/uniappxv/UniApplication' || true)"
+if [[ "$DCLOUD_CNT" -eq 0 ]]; then
+  die "APK 缺少 uni-app x 运行时类！检查 native-android/dcloud-sdk 符号链接与 app/build.gradle 的 fileTree 路径"
+fi
+
 # 版本一致性校验
 AAPT_OUT="$("$AAPT" dump badging "$APK" 2>/dev/null || true)"
 [[ -n "$AAPT_OUT" ]] || die "aapt 无法读取 APK"

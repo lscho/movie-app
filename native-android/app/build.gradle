@@ -57,8 +57,10 @@ android {
 
 dependencies {
     // uni-app x 蒸汽模式离线 SDK 基础库（清单来自官方 simpledemo，追加 video/web-view/network）
+    // 注意：uts 插件要求真实路径——仓库内 dcloud-sdk 为符号链接（不入库），必须 canonicalPath 规范化后再交给 fileTree
+    def dcloudSdkDir = file('../dcloud-sdk').canonicalFile
     implementation fileTree(
-            dir: 'dcloud-sdk/SDK/libs',
+            dir: dcloudSdkDir.toString() + '/SDK/libs',
             include: [
                     'app-common-release.aar',
                     'app-runtime-release.aar',
