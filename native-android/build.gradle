@@ -9,5 +9,8 @@ buildscript {
 
 plugins {
     alias(libs.plugins.android.application) apply false
+    alias(libs.plugins.android.library) apply false
     alias(libs.plugins.kotlin.android) apply false
+    // io.dcloud.uts.auto-register 依赖 KSP（版本与离线SDK demo 保持一致）
+    id 'com.google.devtools.ksp' version '2.3.11' apply false
 }

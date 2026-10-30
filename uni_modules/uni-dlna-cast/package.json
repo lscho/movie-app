@@ -1,0 +1,64 @@
+{
+	"id": "uni-dlna-cast",
+	"displayName": "DLNA 投屏",
+	"version": "1.0.0",
+	"description": "局域网 DLNA/UPnP 投屏：SSDP 设备发现 + AVTransport/RenderingControl 控制。Android 为零依赖原生实现，鸿蒙基于 NetworkKit（MulticastSocket + HTTP）原生实现",
+	"keywords": [
+		"dlna",
+		"upnp",
+		"cast",
+		"投屏"
+	],
+	"dcloudext": {
+		"type": "uts",
+		"name": "uni-dlna-cast",
+		"sale": {
+			"regular": {
+				"price": "0.00"
+			}
+		},
+		"contact": {
+			"qq": ""
+		},
+		"declaration": {
+			"ads": "无",
+			"data": "插件不采集任何数据",
+			"permissions": "Android：ACCESS_WIFI_STATE、CHANGE_WIFI_MULTICAST_STATE、INTERNET；HarmonyOS：INTERNET、GET_NETWORK_INFO，仅用于局域网设备发现与投屏控制"
+		}
+	},
+	"uni_modules": {
+		"dependencies": [],
+		"encrypt": [],
+		"platforms": {
+			"cloud": {
+				"tcb": "n",
+				"aliyun": "n",
+				"alipay": "n"
+			},
+			"client": {
+				"App": {
+					"app-vue": "n",
+					"app-nvue": "n",
+					"app-uvue": "y",
+					"app-uvue-android": "y",
+					"app-uvue-ios": "n",
+					"app-uvue-harmony": "y"
+				},
+				"H5-mobile": {
+					"safari": "n",
+					"chrome": "n"
+				},
+				"小程序": {
+					"微信": "n",
+					"阿里": "n",
+					"百度": "n",
+					"抖音": "n"
+				},
+				"快应用": {
+					"华为": "n",
+					"联盟": "n"
+				}
+			}
+		}
+	}
+}

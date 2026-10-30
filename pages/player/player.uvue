@@ -10,10 +10,25 @@
 				<text class="t-white player-title">{{vodName}}</text>
 				<text class="t-sub player-sub" v-if="curEpName.length > 0">{{curEpName}} · {{curSrcLabel}}</text>
 			</view>
+			<!-- 投屏：始终显示，投屏中高亮 -->
+			<view :class="casting ? 'player-cast player-cast-active' : 'player-cast'" hover-class="chip-hover"
+				@click="openCastPanel">
+				<text :class="casting ? 't-accent' : 't-sub'">{{casting ? '投屏中' : '投屏'}}</text>
+			</view>
 			<view class="player-switch" hover-class="chip-hover" @click="switchNextSource" v-if="sources.length > 1">
 				<text class="t-accent">换源</text>
 			</view>
 			<view class="player-switch-placeholder" v-else></view>
+		</view>
+
+		<!-- 投屏状态卡片：视频区域上方，常驻显示投屏进度 -->
+		<view class="player-cast-card" v-if="casting">
+			<view class="row player-cast-card-top">
+				<view class="player-cast-dot"></view>
+				<text class="t-accent player-cast-card-title flex1">正在投屏到 {{castDeviceName}}</text>
+				<text class="t-dim">{{castProgressText}}</text>
+			</view>
+			<text class="cast-ended-tip" v-if="castEnded">本集已播完，请回手机选择下一集</text>
 		</view>
 
 		<!-- 播放器：拿到真实地址后才创建组件，避免空src初始化与早赋值竞态 -->
@@ -50,6 +65,45 @@
 				</view>
 			</view>
 
+			<!-- 投屏遥控面板：剧集列表上方 -->
+			<view class="cast-remote" v-if="casting">
+				<text class="t-main player-sec-title">投屏遥控</text>
+				<view class="wrap cast-remote-actions">
+					<view class="chip" hover-class="chip-hover" @click="castTogglePlay">
+						<text class="t-accent">{{castPlayLabel}}</text>
+					</view>
+					<view class="chip" hover-class="chip-hover" @click="castSeekBack">
+						<text class="t-sub">快退10s</text>
+					</view>
+					<view class="chip" hover-class="chip-hover" @click="castSeekForward">
+						<text class="t-sub">快进10s</text>
+					</view>
+					<view class="chip" hover-class="chip-hover" @click="stopCasting">
+						<text class="t-sub">停止投屏</text>
+					</view>
+				</view>
+				<view class="row cast-remote-row">
+					<text class="t-dim cast-remote-label">进度</text>
+					<view class="flex1 cast-remote-slider-box">
+						<slider class="cast-slider" :value="castSliderPos" :min="0" :max="castSliderMax" :step="1"
+							track-class="cast-slider-track" track-active-class="cast-slider-track-active"
+							thumb-class="cast-slider-thumb" @changing="onCastProgressChanging"
+							@change="onCastProgressChange"></slider>
+					</view>
+					<text class="t-dim cast-remote-time">{{castProgressText}}</text>
+				</view>
+				<view class="row cast-remote-row">
+					<text class="t-dim cast-remote-label">音量</text>
+					<view class="flex1 cast-remote-slider-box">
+						<slider class="cast-slider" :value="castVolume" :min="0" :max="100" :step="1"
+							track-class="cast-slider-track" track-active-class="cast-slider-track-active"
+							thumb-class="cast-slider-thumb" @changing="onCastVolumeChanging"
+							@change="onCastVolumeChange"></slider>
+					</view>
+					<text class="t-dim cast-remote-time">{{castVolume}}</text>
+				</view>
+			</view>
+
 			<!-- 剧集 -->
 			<view class="player-episodes" v-if="episodes.length > 0">
 				<text class="t-main player-sec-title">选集（{{episodes.length}}）</text>
@@ -73,6 +127,36 @@
 			</view>
 			<view class="player-bottom-space"></view>
 		</scroll-view>
+
+		<!-- 投屏设备选择弹层（底部浮出，静态显示无动画） -->
+		<view class="cast-layer" v-if="showCastPanel">
+			<view class="cast-mask" @click="closeCastPanel"></view>
+			<view class="cast-panel">
+				<text class="t-main cast-panel-title">选择投屏设备</text>
+				<view class="cast-panel-body">
+					<text class="t-sub cast-scan-tip" v-if="scanning">正在搜索局域网设备…</text>
+					<view class="cast-empty" v-if="!scanning && castDevices.length == 0">
+						<text class="t-main">未找到设备</text>
+						<text class="t-dim cast-empty-tip">{{scanHint}}</text>
+						<text class="t-dim cast-diag" v-if="scanDiag.length > 0" @click="copyDiag">诊断：{{scanDiag}}</text>
+						<view class="btn-ghost cast-retry" hover-class="btn-ghost-hover" @click="startScan">
+							<text class="t-accent">重新搜索</text>
+						</view>
+					</view>
+					<scroll-view class="cast-panel-list" direction="vertical" v-if="castDevices.length > 0">
+						<view class="cast-device" v-for="d in castDevices" :key="d.udn" hover-class="chip-hover"
+							@click="pickDevice(d)">
+							<text class="cast-device-name flex1">{{d.name}}</text>
+							<text class="t-accent">连接</text>
+						</view>
+					</scroll-view>
+					<text class="t-dim cast-connecting" v-if="connecting">正在连接设备…</text>
+				</view>
+				<view class="btn-ghost cast-cancel" hover-class="btn-ghost-hover" @click="closeCastPanel">
+					<text class="t-sub">取消</text>
+				</view>
+			</view>
+		</view>
 	</view>
 </template>
 
@@ -82,6 +166,13 @@
 
 	import { fetchVod } from '../../api/vod.uts'
 	import { pushHistory, saveProgress, getProgress } from '../../api/store.uts'
+
+	// DLNA 投屏插件：电视自己拉流，手机只下发地址与控制指令
+	import {
+		CastDevice, CastResult, CastStatus, ScanOptions, CastOptions,
+		scanDevices, scanDiagnostics, stopScan, connect, disconnect, isConnected, getConnectedName,
+		play, pause, resume, stop, seek, setVolume, getStatus
+	} from '@/uni_modules/uni-dlna-cast'
 
 	const vod = ref<VodItem | null>(null)
 	const vodName = ref('加载中…')
@@ -110,6 +201,24 @@
 	let pendingUrl = ''         // 就绪前挂起的播放地址
 	const statusBarH = ref(44)
 
+	// ---------- 投屏状态 ----------
+	const casting = ref(false)                                    // 投屏模式
+	const castDevices = ref<Array<CastDevice>>(new Array<CastDevice>())
+	const castStatus = ref<CastStatus | null>(null)
+	const showCastPanel = ref(false)                               // 设备选择弹层
+	const scanning = ref(false)                                    // 扫描中
+	const scanDiag = ref('')                                       // 扫描诊断（搜不到时展示）
+	const scanHint = ref('请确认手机与电视连接同一 Wi-Fi，且路由器未开启 AP 隔离')
+	const castDeviceName = ref('')                                 // 当前投屏设备名
+	const connecting = ref(false)                                  // 连接设备中
+	const castPlayed = ref(false)                                  // 是否已开始播放（用于识别真播完）
+	const castSliderPos = ref(0)                                   // 投屏进度（秒）
+	const castDur = ref(0)                                         // 投屏总时长（秒）
+	const castVolume = ref(50)                                     // 投屏音量 0-100
+	let castTimer = -1                   // 状态轮询定时器
+	let castProgressDragging = false     // 进度条拖动中（拖动期间不被轮询覆盖）
+	let castVolumeDragging = false       // 音量条拖动中
+
 	const episodes = computed((): Array<Episode> => {
 		const v = vod.value
 		if (v == null) return new Array<Episode>()
@@ -127,6 +236,48 @@
 		const v = vod.value
 		if (v == null || v.sources.length == 0) return ''
 		return v.sources[srcIdx.value].label
+	})
+
+	// ---------- 投屏展示用计算属性 ----------
+	const padTime = (n : number) : string => {
+		const i = Math.floor(n)
+		return i < 10 ? `0${i}` : i.toString()
+	}
+
+	const formatTime = (sec : number) : string => {
+		let s = Math.floor(sec)
+		if (s < 0) s = 0
+		const h = Math.floor(s / 3600)
+		const m = Math.floor((s % 3600) / 60)
+		const ss = s % 60
+		if (h > 0) return `${h}:${padTime(m)}:${padTime(ss)}`
+		return `${padTime(m)}:${padTime(ss)}`
+	}
+
+	const castPlayLabel = computed((): string => {
+		const st = castStatus.value
+		if (st != null && st.state == 'PLAYING') return '暂停'
+		return '播放'
+	})
+
+	// 进度条上限：时长未知时给一个宽松上限，保证仍可拖动 seek
+	const castSliderMax = computed((): number => {
+		const dur = Math.floor(castDur.value)
+		return dur > 1 ? dur : 7200
+	})
+
+	const castProgressText = computed((): string => {
+		return `${formatTime(castSliderPos.value)} / ${formatTime(castDur.value)}`
+	})
+
+	// 播完判定：STOPPED 且（本集真的播过 或 进度已到尾）
+	// 刚投屏时电视可能先回 STOPPED，用 castPlayed/进度兜底避免误报
+	const castEnded = computed((): boolean => {
+		if (!casting.value) return false
+		const st = castStatus.value
+		if (st == null || st.state != 'STOPPED') return false
+		if (castPlayed.value) return true
+		return st.duration > 0 && st.position >= st.duration - 5
 	})
 
 	onLoad((options : OnLoadOptions) => {
@@ -151,7 +302,9 @@
 	})
 
 	onUnload(() => {
-		// 进度已在timeupdate中周期保存，页面卸载无需额外处理
+		// 页面退出：停扫描、停轮询。不断开设备——电视继续播放，手机侧随时可以关闭
+		stopScan()
+		stopCastTimer()
 	})
 
 	// 懒创建视频上下文：video 组件由 v-if 控制，挂载时机晚于 onReady
@@ -195,7 +348,7 @@
 		})
 	}
 
-	const startPlay = (ep : number, resume : boolean) => {
+	const startPlay = (ep : number, fromProgress : boolean) => {
 		const v = vod.value
 		if (v == null || v.sources.length == 0) return
 		const eps = v.sources[srcIdx.value].episodes
@@ -203,7 +356,7 @@
 		epIdx.value = ep
 		seekTo = -1.0
 		let url = eps[ep].url
-		if (resume) {
+		if (fromProgress) {
 			const p = getProgress(vodKey, ep)
 			if (p != null && p.position > 30 && (p.duration <= 0 || p.position < p.duration - 60)) {
 				seekTo = p.position
@@ -253,6 +406,10 @@
 		// 播放成功：结束自动换线状态；当前线路视为可用，清空试线记录
 		autoSwitching = false
 		triedSrc = []
+		// 投屏中本地不允许出声：误触起播则立即按下暂停（不销毁组件）
+		if (casting.value && videoContext != null) {
+			videoContext!.pause()
+		}
 	}
 
 	const onTimeUpdate = (e : UniVideoTimeUpdateEvent) => {
@@ -329,6 +486,11 @@
 		// 手动切集：重置自动换线记录
 		triedSrc = []
 		autoSwitching = false
+		// 投屏中切集：直接让电视拉新地址，本地播放器保持暂停
+		if (casting.value) {
+			castSwitchEp(i)
+			return
+		}
 		startPlay(i, true)
 	}
 
@@ -340,7 +502,12 @@
 		autoSwitching = false
 		srcIdx.value = i
 		// 换线路后尽量保持同一集
-		startPlay(epIdx.value < v.sources[i].episodes.length ? epIdx.value : 0, false)
+		const ep = epIdx.value < v.sources[i].episodes.length ? epIdx.value : 0
+		if (casting.value) {
+			castSwitchEp(ep)
+			return
+		}
+		startPlay(ep, false)
 	}
 
 	const switchNextSource = () => {
@@ -354,6 +521,316 @@
 
 	const goBack = () => {
 		uni.navigateBack()
+	}
+
+	// ==================== 投屏 ====================
+
+	const castFailToast = (res : CastResult) => {
+		const msg = res.errMsg.length > 0 ? res.errMsg : '投屏操作失败'
+		uni.showToast({ title: msg, icon: 'none' })
+	}
+
+	// 统一的控制结果处理：errCode 非 0 时弹提示
+	const castOpts = () : CastOptions => {
+		return {
+			success: (r : CastResult) => {
+				if (r.errCode != 0) castFailToast(r)
+			},
+			fail: (r : CastResult) => {
+				castFailToast(r)
+			}
+		} as CastOptions
+	}
+
+	// 打开设备选择弹层并开始扫描
+	const openCastPanel = () => {
+		showCastPanel.value = true
+		startScan()
+	}
+
+	// 关闭弹层：停止扫描释放组播锁
+	const closeCastPanel = () => {
+		showCastPanel.value = false
+		connecting.value = false
+		scanning.value = false
+		stopScan()
+	}
+
+	const startScan = () => {
+		stopScan()
+		scanning.value = true
+		scanDiag.value = ''
+		scanHint.value = '请确认手机与电视连接同一 Wi-Fi，且路由器未开启 AP 隔离'
+		castDevices.value = new Array<CastDevice>()
+		const opts = {
+			// 6 秒：真机首次组播要等网卡唤醒，设备也在 MX 秒内随机延迟响应，4 秒偏紧
+			timeout: 6000,
+			success: (devices : Array<CastDevice>) => {
+				scanning.value = false
+				castDevices.value = devices
+				if (devices.length == 0) explainEmptyScan()
+			},
+			fail: (res : CastResult) => {
+				scanning.value = false
+				castDevices.value = new Array<CastDevice>()
+				scanDiag.value = res.errMsg
+				castFailToast(res)
+			},
+			complete: () => {
+				scanning.value = false
+			}
+		} as ScanOptions
+		scanDevices(opts)
+	}
+
+	// 搜不到设备时，根据底层诊断给出可操作的原因，而不是只甩一句"未找到"
+	const explainEmptyScan = () => {
+		let diag = ''
+		try {
+			diag = scanDiagnostics()
+		} catch (e : any) {
+			diag = ''
+		}
+		scanDiag.value = diag
+		if (diag.indexOf('iface=none') >= 0) {
+			scanHint.value = '当前没有可用的局域网连接。请确认手机已连上 Wi-Fi（不是仅蜂窝网络）'
+		} else if (diag.indexOf('packets=0') >= 0) {
+			scanHint.value = '没有收到任何局域网响应：多半是路由器开启了 AP 隔离，或手机连的是访客网络。也可把电视的「投屏/DLNA」开关打开后重试'
+		} else if (diag.indexOf('candidates=') >= 0) {
+			scanHint.value = '收到了设备响应但都无法连接：可能是电视端 DLNA 服务异常，重启电视后再试'
+		}
+	}
+
+	// 点诊断信息复制，方便反馈
+	const copyDiag = () => {
+		if (scanDiag.value.length == 0) return
+		uni.setClipboardData({
+			data: scanDiag.value,
+			success: () => {
+				uni.showToast({ title: '诊断信息已复制', icon: 'none' })
+			}
+		})
+	}
+
+	// 选设备 → connect → play → 关闭弹层 → 进入投屏模式
+	const pickDevice = (d : CastDevice) => {
+		if (connecting.value) return
+		if (playUrl.value.length == 0) {
+			uni.showToast({ title: '视频地址还没准备好，请稍后再试', icon: 'none' })
+			return
+		}
+		connecting.value = true
+		const onFail = (r : CastResult) => {
+			connecting.value = false
+			castFailToast(r)
+		}
+		connect(d, {
+			success: (r : CastResult) => {
+				if (r.errCode != 0) {
+					onFail(r)
+					return
+				}
+				if (!isConnected()) {
+					connecting.value = false
+					uni.showToast({ title: '连接设备失败，请重试', icon: 'none' })
+					return
+				}
+				const n = getConnectedName()
+				startCastPlayback(n.length > 0 ? n : d.name)
+			},
+			fail: (r : CastResult) => {
+				onFail(r)
+			}
+		} as CastOptions)
+	}
+
+	const startCastPlayback = (deviceName : string) => {
+		play(playUrl.value, vodName.value, {
+			success: (r : CastResult) => {
+				connecting.value = false
+				if (r.errCode != 0) {
+					castFailToast(r)
+					return
+				}
+				closeCastPanel()
+				enterCastMode(deviceName)
+				uni.showToast({ title: `已投屏到${deviceName}`, icon: 'none' })
+			},
+			fail: (r : CastResult) => {
+				connecting.value = false
+				castFailToast(r)
+			}
+		} as CastOptions)
+	}
+
+	// 进入投屏模式：本地视频暂停但保留组件，启动状态轮询
+	const enterCastMode = (deviceName : string) => {
+		casting.value = true
+		castDeviceName.value = deviceName
+		castStatus.value = null
+		castPlayed.value = false
+		castSliderPos.value = 0
+		castDur.value = 0
+		castProgressDragging = false
+		castVolumeDragging = false
+		if (playUrl.value.length > 0) {
+			ensureContext()
+			videoContext!.pause()
+		}
+		startCastTimer()
+		refreshCastStatus()
+	}
+
+	const startCastTimer = () => {
+		stopCastTimer()
+		castTimer = setInterval(() => {
+			refreshCastStatus()
+		}, 3000)
+	}
+
+	const stopCastTimer = () => {
+		if (castTimer >= 0) {
+			clearInterval(castTimer)
+			castTimer = -1
+		}
+	}
+
+	// 每 3 秒从电视拉一次播放状态
+	const refreshCastStatus = () => {
+		if (!casting.value) return
+		getStatus((status : CastStatus) => {
+			castStatus.value = status
+			if (status.state == 'PLAYING') castPlayed.value = true
+			// UNKNOWN 表示这次读取失败（位置/音量为兜底0），保留上一次的数值
+			if (status.state == 'UNKNOWN') return
+			if (!castProgressDragging) castSliderPos.value = status.position
+			if (status.duration > 0) {
+				castDur.value = status.duration
+			} else if (curDur > 0 && castDur.value <= 0) {
+				castDur.value = curDur   // 电视没给时长时用本地元数据兜底
+			}
+			if (!castVolumeDragging) castVolume.value = Math.floor(status.volume)
+		})
+	}
+
+	// 暂停 / 继续播放：按当前 status.state 决定动作
+	const castTogglePlay = () => {
+		if (!casting.value) return
+		const st = castStatus.value
+		const playing = st != null && st.state == 'PLAYING'
+		const opts = castOpts()
+		if (playing) {
+			pause(opts)
+		} else {
+			resume(opts)
+		}
+		setTimeout(() => {
+			refreshCastStatus()
+		}, 800)
+	}
+
+	const castSeekTo = (sec : number) => {
+		seek(sec, castOpts())
+	}
+
+	// 快退 / 快进 10 秒
+	const castSeekBy = (delta : number) => {
+		if (!casting.value) return
+		let target = castSliderPos.value + delta
+		if (target < 0) target = 0
+		// 时长未知（仍为0）时不设上限，避免被夹到1秒
+		if (castDur.value > 1 && target > castDur.value) target = Math.floor(castDur.value)
+		castSliderPos.value = target
+		castSeekTo(target)
+	}
+
+	const castSeekBack = () => {
+		castSeekBy(0 - 10)
+	}
+
+	const castSeekForward = () => {
+		castSeekBy(10)
+	}
+
+	const onCastProgressChanging = (e : UniSliderChangeEvent) => {
+		castProgressDragging = true
+		castSliderPos.value = e.detail.value
+	}
+
+	const onCastProgressChange = (e : UniSliderChangeEvent) => {
+		castProgressDragging = false
+		castSliderPos.value = e.detail.value
+		castSeekTo(e.detail.value)
+	}
+
+	const onCastVolumeChanging = (e : UniSliderChangeEvent) => {
+		castVolumeDragging = true
+		castVolume.value = e.detail.value
+	}
+
+	const onCastVolumeChange = (e : UniSliderChangeEvent) => {
+		castVolumeDragging = false
+		castVolume.value = e.detail.value
+		setVolume(e.detail.value, castOpts())
+	}
+
+	// 停止投屏：停电视播放 → 断开控制 → 恢复本地播放
+	const stopCasting = () => {
+		const pos = castSliderPos.value
+		stop(castOpts())
+		disconnect()
+		casting.value = false
+		castDeviceName.value = ''
+		castStatus.value = null
+		castPlayed.value = false
+		castSliderPos.value = 0
+		castDur.value = 0
+		stopCastTimer()
+		resumeLocalPlay(pos)
+	}
+
+	// 回到本地播放：投屏期间切过集/换过线路时按当前剧集重新加载
+	const resumeLocalPlay = (pos : number) => {
+		const eps = episodes.value
+		let targetUrl = ''
+		if (epIdx.value >= 0 && epIdx.value < eps.length) {
+			targetUrl = eps[epIdx.value].url
+		}
+		if (targetUrl.length == 0 || playUrl.value.length == 0 || targetUrl != playUrl.value) {
+			startPlay(epIdx.value, true)
+			return
+		}
+		ensureContext()
+		if (pos > 0) {
+			videoContext!.seek(pos)
+		}
+		videoContext!.play()
+	}
+
+	// 投屏中切集：直接让电视拉新地址，不走本地播放器
+	const castSwitchEp = (i : number) => {
+		const eps = episodes.value
+		if (i < 0 || i >= eps.length) return
+		epIdx.value = i
+		seekTo = -1.0
+		castPlayed.value = false
+		castStatus.value = null
+		castSliderPos.value = 0
+		castDur.value = 0
+		const url = eps[i].url
+		play(url, vodName.value, {
+			success: (r : CastResult) => {
+				if (r.errCode != 0) {
+					castFailToast(r)
+					return
+				}
+				recordHistory(url)
+				refreshCastStatus()
+			},
+			fail: (r : CastResult) => {
+				castFailToast(r)
+			}
+		} as CastOptions)
 	}
 </script>
 
@@ -419,6 +896,49 @@
 		height: 72rpx;
 	}
 
+	/* 投屏按钮：始终显示，投屏中高亮 */
+	.player-cast {
+		width: 112rpx;
+		height: 72rpx;
+		border-radius: 36rpx;
+		background-color: #262b36;
+		align-items: center;
+		justify-content: center;
+		margin-right: 12rpx;
+	}
+
+	.player-cast-active {
+		background-color: #16304f;
+	}
+
+	/* 投屏状态卡片（视频区域上方） */
+	.player-cast-card {
+		padding: 16rpx 24rpx;
+		background-color: #1a1c22;
+	}
+
+	.player-cast-card-top {
+		margin-bottom: 6rpx;
+	}
+
+	.player-cast-dot {
+		width: 14rpx;
+		height: 14rpx;
+		border-radius: 7rpx;
+		background-color: #3d9bff;
+		margin-right: 12rpx;
+	}
+
+	.player-cast-card-title {
+		font-size: 28rpx;
+	}
+
+	.cast-ended-tip {
+		margin-top: 8rpx;
+		color: #ffb454;
+		font-size: 26rpx;
+	}
+
 	.player-video {
 		width: 100%;
 		height: 440rpx;
@@ -471,6 +991,147 @@
 	}
 
 	.player-bottom-space {
+		height: 80rpx;
+	}
+
+	/* ---------- 投屏遥控面板 ---------- */
+	.cast-remote {
+		margin-top: 12rpx;
+		padding: 24rpx;
+		border-radius: 20rpx;
+		background-color: #1a1c22;
+	}
+
+	.cast-remote-actions {
+		margin-bottom: 4rpx;
+	}
+
+	.cast-remote-row {
+		margin-top: 12rpx;
+	}
+
+	.cast-remote-label {
+		width: 72rpx;
+	}
+
+	.cast-remote-slider-box {
+		flex: 1;
+		margin: 0 16rpx;
+	}
+
+	.cast-remote-time {
+		width: 168rpx;
+		text-align: right;
+	}
+
+	.cast-slider {
+		width: 100%;
+	}
+
+	.cast-slider-track {
+		background-color: #262b36;
+	}
+
+	.cast-slider-track-active {
+		background-color: #3d9bff;
+	}
+
+	.cast-slider-thumb {
+		width: 24rpx;
+		height: 24rpx;
+		border-radius: 12rpx;
+		background-color: #ffffff;
+	}
+
+	/* ---------- 投屏设备选择弹层 ---------- */
+	.cast-layer {
+		position: absolute;
+		top: 0;
+		left: 0;
+		right: 0;
+		bottom: 0;
+		z-index: 99;
+	}
+
+	.cast-mask {
+		flex: 1;
+		background-color: rgba(0, 0, 0, 0.6);
+	}
+
+	.cast-panel {
+		position: absolute;
+		left: 0;
+		right: 0;
+		bottom: 0;
+		padding: 32rpx 32rpx 48rpx 32rpx;
+		border-top-left-radius: 28rpx;
+		border-top-right-radius: 28rpx;
+		background-color: #1a1c22;
+	}
+
+	.cast-panel-title {
+		font-size: 32rpx;
+	}
+
+	.cast-panel-body {
+		margin-top: 24rpx;
+	}
+
+	.cast-scan-tip {
+		margin-bottom: 16rpx;
+	}
+
+	.cast-panel-list {
+		height: 420rpx;
+	}
+
+	.cast-device {
+		flex-direction: row;
+		align-items: center;
+		padding: 22rpx 24rpx;
+		margin-bottom: 16rpx;
+		border-radius: 16rpx;
+		background-color: #262b36;
+	}
+
+	.cast-device-name {
+		color: #ffffff;
+		font-size: 28rpx;
+		lines: 1;
+		text-overflow: ellipsis;
+	}
+
+	.cast-empty {
+		align-items: center;
+		padding: 16rpx 0;
+	}
+
+	.cast-empty-tip {
+		margin-top: 12rpx;
+		width: 100%;
+		text-align: center;
+	}
+
+	.cast-diag {
+		margin-top: 12rpx;
+		width: 100%;
+		text-align: center;
+		font-size: 20rpx;
+		color: #4b5563;
+	}
+
+	.cast-retry {
+		margin-top: 24rpx;
+		width: 240rpx;
+		height: 72rpx;
+	}
+
+	.cast-connecting {
+		margin-top: 12rpx;
+	}
+
+	.cast-cancel {
+		margin-top: 24rpx;
 		height: 80rpx;
 	}
 </style>

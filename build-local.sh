@@ -182,6 +182,37 @@ find "$ANDROID_PROJ/app/src/main/assets/apps" -maxdepth 1 -mindepth 1 -type d ! 
 STRINGS_XML="$ANDROID_PROJ/app/src/main/res/values/strings.xml"
 APP_NAME_ENV="$APP_NAME" perl -0pi -e 's#(<string name="app_name">)[^<]*(</string>)#$1$ENV{APP_NAME_ENV}$2#' "$STRINGS_XML" 2>/dev/null || true
 
+# UTS 插件同步：HBuilderX 会把 uni_modules 下的 uts 插件编译成 Kotlin，
+# 产物在 unpackage/resources/app-android/uni_modules/<插件>/utssdk/app-android/src/index.kt。
+# 离线SDK 本地打包**不会自动生成 gradle 模块**，必须把这份 Kotlin 拷进 native-android 下
+# 手写的库模块（模块名、包名与 gradle 配置一一对应），否则前端 import 会找不到实现。
+UTS_RES="$RESOURCE_ROOT/uni_modules"
+if [[ -d "$UTS_RES" ]]; then
+  for plugin_dir in "$UTS_RES"/*/; do
+    [[ -d "$plugin_dir" ]] || continue
+    plugin_name="$(basename "$plugin_dir")"
+    src_kt="$plugin_dir/utssdk/app-android/src/index.kt"
+    [[ -f "$src_kt" ]] || continue
+    case "$plugin_name" in
+      uni-dlna-cast)
+        dst_kt="$ANDROID_PROJ/native-dlna/src/main/java/uts/sdk/modules/uniDlnaCast/index.kt"
+        ;;
+      *)
+        warn "未登记 UTS 插件 ${plugin_name} 的 Kotlin 落地路径，已跳过（需在 build-local.sh 的 case 中补充）"
+        continue
+        ;;
+    esac
+    mkdir -p "$(dirname "$dst_kt")"
+    if ! cmp -s "$src_kt" "$dst_kt"; then
+      cp "$src_kt" "$dst_kt"
+      log "已同步 UTS 插件 ${plugin_name} → $(basename "$(dirname "$(dirname "$(dirname "$(dirname "$dst_kt")")")")")"
+    fi
+  done
+  ok "UTS 插件 Kotlin 产物已同步"
+else
+  warn "未找到 $UTS_RES（项目未使用 UTS 插件时可忽略）"
+fi
+
 # 模块依赖自检（告警不阻断）
 MOD_AAR_MAP="VideoPlayer=uni-video-release.aar"
 BUILTIN_MODULES="uni-list-view uni-form uni-getElementById uni-pullDownRefresh uni-rpx2px uni-dialogPage uni-event uni-crash uni-theme"
@@ -216,7 +247,8 @@ else
 fi
 [[ -n "$APK" && -f "$APK" ]] || die "未找到 gradle 产物 APK，日志: $LOG"
 
-# release 瘦身：AAR 内的 dev/非 arm64 运行时快照无法用 gradle assets 过滤，打包后剔除
+# release 瘦身：AAR 内的 dev 运行时快照无法用 gradle assets 过滤，打包后剔除
+# 注意：必须保留 arm64 与 arm 两套快照——32 位电视盒子走 arm 快照，删掉会在起播/渲染时崩溃
 STRIP_APK=""
 if [[ "$BUILD_TYPE" == "release" ]]; then
   STRIP_TMP="${APK%.apk}-stripped.apk"
@@ -226,13 +258,12 @@ if [[ "$BUILD_TYPE" == "release" ]]; then
       'assets/uni-app-x-framework-vapor-dev-arm.snapshot' \
       'assets/uni-app-x-framework-vapor-dev-arm64.snapshot' \
       'assets/uni-app-x-framework-vapor-dev-x86_64.snapshot' \
-      'assets/uni-app-x-framework-vapor-arm.snapshot' \
       'assets/uni-app-x-framework-vapor-x86_64.snapshot' 2>>"$LOG"; then
     STRIP_APK="${APK%.apk}-stripped-aligned.apk"
     "$ZIPALIGN" -f 4 "$STRIP_TMP" "$STRIP_APK" >>"$LOG" 2>&1 || die "APK 瘦身后对齐失败"
     rm -f "$STRIP_TMP"
     APK="$STRIP_APK"
-    log "已剔除 dev/非 arm64 运行时快照"
+    log "已剔除 dev/x86_64 运行时快照（保留 arm64 + arm 双快照）"
   else
     rm -f "$STRIP_TMP"
     warn "运行时快照剔除失败，保留原包"
@@ -273,6 +304,24 @@ AAPT_OUT="$("$AAPT" dump badging "$APK" 2>/dev/null || true)"
 [[ -n "$AAPT_OUT" ]] || die "aapt 无法读取 APK"
 printf '%s\n' "$AAPT_OUT" | grep -q "versionCode='$VERSION_CODE'" || die "APK versionCode 与 manifest.json 不一致"
 printf '%s\n' "$AAPT_OUT" | grep -q "versionName='$VERSION_NAME'" || die "APK versionName 与 manifest.json 不一致"
+
+# ---------- 电视兼容门禁 ----------
+# 1) 必须同时含 64/32 位原生库：只出 arm64 会让 32 位老电视盒子提示"应用不兼容"
+NATIVE_CODE_LINE="$(printf '%s\n' "$AAPT_OUT" | grep -m1 '^native-code:')"
+for abi in arm64-v8a armeabi-v7a; do
+  printf '%s\n' "$NATIVE_CODE_LINE" | grep -q "'$abi'" ||
+    die "APK 缺少 $abi 原生库（${NATIVE_CODE_LINE:-无 native-code}），32 位电视盒子会提示应用不兼容"
+done
+# 2) 不允许出现 required 的硬件能力（相机/定位/触屏等会让无此硬件的电视被判定不兼容）
+REQUIRED_FEATURES="$(printf '%s\n' "$AAPT_OUT" | grep -E '^uses-feature:' | sed "s/^uses-feature: name='//;s/'.*//" || true)"
+if [[ -n "$REQUIRED_FEATURES" ]]; then
+  warn "APK 仍声明了 required 硬件能力（电视可能判定不兼容）：$(printf '%s' "$REQUIRED_FEATURES" | tr '\n' ' ')"
+fi
+# 3) 32 位运行时快照必须存在（瘦身时误删会在 32 位设备上启动/渲染崩溃）
+for snap in 'assets/uni-app-x-framework-vapor-arm64.snapshot' 'assets/uni-app-x-framework-vapor-arm.snapshot'; do
+  unzip -l "$APK" "$snap" >/dev/null 2>&1 || die "APK 缺少运行时快照 $snap（32 位设备会崩溃）"
+done
+ok "电视兼容门禁通过（arm64+arm32 原生库 / 无 required 硬件能力 / 双快照齐全）"
 
 # ---------- 产物 ----------
 OUTPUT="${OUTPUT:-$UNI_PROJECT/unpackage/apk/quanmin-movie-v$VERSION_NAME-$(date +%Y%m%d-%H%M)-$BUILD_TYPE.apk}"

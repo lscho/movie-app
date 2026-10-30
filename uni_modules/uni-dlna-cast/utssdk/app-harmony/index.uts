@@ -1,0 +1,915 @@
+// HarmonyOS 平台实现：使用系统 NetworkKit 的 UDP Socket + HTTP 完成 DLNA 投屏。
+//
+// 与 Android 端（app-android → native-dlna 的 Kotlin 实现）保持相同的对外 API 和协议：
+//   1) SSDP M-SEARCH 发现 MediaRenderer，收集 LOCATION；
+//   2) 拉取设备描述 XML，解析 friendlyName / UDN / AVTransport / RenderingControl 的 controlURL；
+//   3) 通过 SOAP 下发 SetAVTransportURI + Play，以及暂停/继续/停止/seek/音量；
+//   4) 轮询 GetTransportInfo / GetPositionInfo / GetVolume 组合出 CastStatus。
+//
+// 鸿蒙侧的关键差异（改代码前必读）：
+//   - 用 @kit.NetworkKit 的 MulticastSocket（UDPSocket 扩展）做组播收发；用 NetHandle.bindSocket 把 socket
+//     固定到当前默认网络，避免 Wi-Fi + 蜂窝 + VPN 多网卡时组播从错误网卡发出。
+//   - 主 socket 绑随机端口（port: 0），不要绑 1900：单播 M-SEARCH 响应只会回到
+//     发起请求的源端口；1900 常被系统投屏服务占用，抢不到就永远搜不到设备。
+//   - 收包先只记 LOCATION，扫完再逐个拉描述 XML；描述请求慢，不能堵在收包循环里。
+//   - 按 UDN 去重，允许同一设备的坏 LOCATION 失败后由好 LOCATION 救回来。
+//
+// 权限：ohos.permission.INTERNET、ohos.permission.GET_NETWORK_INFO（见同目录 module.json5）。
+
+import { connection, socket } from '@kit.NetworkKit'
+import { buffer } from '@kit.ArkTS'
+
+import { CastDevice, CastResult as UtsCastResult, ScanOptions, CastOptions, CastStatus as UtsCastStatus } from '../interface.uts'
+
+const SSDP_ADDR = '239.255.255.250'
+const SSDP_PORT = 1900
+const BROADCAST_ADDR = '255.255.255.255'
+const MX = '2'
+
+const SERVICE_AV_TRANSPORT = 'urn:schemas-upnp-org:service:AVTransport:1'
+const SERVICE_RENDERING = 'urn:schemas-upnp-org:service:RenderingControl:1'
+const SERVICE_AV_TRANSPORT_PREFIX = 'urn:schemas-upnp-org:service:AVTransport'
+const SERVICE_RENDERING_PREFIX = 'urn:schemas-upnp-org:service:RenderingControl'
+
+const SEARCH_TARGETS : Array<string> = [
+	'urn:schemas-upnp-org:device:MediaRenderer:1',
+	'upnp:rootdevice',
+	'ssdp:all'
+]
+
+const ERR_NOT_CONNECTED = 1001
+const ERR_NETWORK = 1002
+const ERR_DEVICE_UNREACHABLE = 1003
+const ERR_PARAM = 1004
+const ERR_STATE = 1005
+
+type DeviceProfile = {
+	name : string
+	udn : string
+	avTransportControlUrl : string
+	renderingControlUrl : string
+}
+
+type SsdpHit = {
+	location : string
+	udn : string
+}
+
+type LocationCandidate = {
+	location : string
+	udn : string
+}
+
+// ---------------------------------------------------------------- 状态
+
+let scanSocket : socket.MulticastSocket | null = null
+let scanOptions : ScanOptions | null = null
+let scanCandidates : Array<LocationCandidate> = new Array<LocationCandidate>()
+let scanPackets : number = 0
+let scanIface : string = 'none'
+let scanCancelled : boolean = false
+let scanFinishing : boolean = false
+// 每次扫描一个 token：旧扫描的异步回调（描述请求、定时器）靠它失效，
+// 避免用户反复开关投屏面板时旧结果串到新一次扫描里
+let scanToken : number = 0
+let scanTimers : Array<number> = new Array<number>()
+let lastScanDiag : string = ''
+
+let currentProfile : DeviceProfile | null = null
+let currentDevice : CastDevice | null = null
+let lastVolume : number = 30
+let statusBusy : boolean = false
+let lastStatus : UtsCastStatus = { state: 'UNKNOWN', position: 0, duration: 0, volume: 0, muted: false } as UtsCastStatus
+
+// ---------------------------------------------------------------- 通用小工具
+
+function okResult() : UtsCastResult {
+	return { errCode: 0, errMsg: 'ok' } as UtsCastResult
+}
+
+function failResult(code : number, msg : string) : UtsCastResult {
+	return { errCode: code, errMsg: msg } as UtsCastResult
+}
+
+function succeed(options : CastOptions | null) : void {
+	const res = okResult()
+	if (options != null) {
+		options.success?.(res)
+		options.complete?.(res)
+	}
+}
+
+function fail(options : CastOptions | null, code : number, msg : string) : void {
+	const res = failResult(code, msg)
+	if (options != null) {
+		options.fail?.(res)
+		options.complete?.(res)
+	}
+}
+
+function toInt(value : string) : number {
+	const n = parseInt(value)
+	return isNaN(n) ? 0 : n
+}
+
+function pad2(n : number) : string {
+	return n < 10 ? '0' + n.toString() : n.toString()
+}
+
+/** 秒 → HH:MM:SS（DLNA Seek 的 REL_TIME 格式） */
+function formatHms(totalSeconds : number) : string {
+	let t = Math.floor(totalSeconds)
+	if (t < 0) t = 0
+	const h = Math.floor(t / 3600)
+	const m = Math.floor((t % 3600) / 60)
+	const s = t % 60
+	return pad2(h) + ':' + pad2(m) + ':' + pad2(s)
+}
+
+/** HH:MM:SS → 秒；电视常见返回 NOT_IMPLEMENTED 或空串，按 0 处理 */
+function parseHms(value : string) : number {
+	const v = value.trim()
+	if (v.length == 0 || v == 'NOT_IMPLEMENTED') return 0
+	const parts = v.split(':')
+	let total = 0.0
+	if (parts.length == 3) {
+		total = parseFloat(parts[0]) * 3600.0 + parseFloat(parts[1]) * 60.0 + parseFloat(parts[2])
+	} else if (parts.length == 2) {
+		total = parseFloat(parts[0]) * 60.0 + parseFloat(parts[1])
+	} else if (parts.length == 1) {
+		total = parseFloat(parts[0])
+	}
+	if (isNaN(total)) return 0
+	return Math.floor(total)
+}
+
+function isCastableUrl(url : string) : boolean {
+	const u = url.trim().toLowerCase()
+	return u.startsWith('http://') || u.startsWith('https://')
+}
+
+function escapeXml(value : string) : string {
+	let s = value
+	s = s.split('&').join('&amp;')
+	s = s.split('<').join('&lt;')
+	s = s.split('>').join('&gt;')
+	s = s.split('"').join('&quot;')
+	s = s.split("'").join('&apos;')
+	return s
+}
+
+function decodeXmlEntities(value : string) : string {
+	let s = value
+	s = s.split('&lt;').join('<')
+	s = s.split('&gt;').join('>')
+	s = s.split('&quot;').join('"')
+	s = s.split('&apos;').join("'")
+	s = s.split('&amp;').join('&')
+	return s
+}
+
+/** 按 URL 后缀猜 mime；部分电视靠 protocolInfo 决定用哪个解码器 */
+function guessProtocolInfo(url : string) : string {
+	const lower = url.toLowerCase()
+	let mime = 'video/mp4'
+	if (lower.indexOf('.m3u8') >= 0) {
+		mime = 'application/vnd.apple.mpegurl'
+	} else if (lower.indexOf('.mpd') >= 0) {
+		mime = 'application/dash+xml'
+	} else if (lower.indexOf('.flv') >= 0) {
+		mime = 'video/x-flv'
+	} else if (lower.indexOf('.mkv') >= 0) {
+		mime = 'video/x-matroska'
+	} else if (lower.indexOf('.avi') >= 0) {
+		mime = 'video/x-msvideo'
+	}
+	return 'http-get:*:' + mime + ':*'
+}
+
+/** 投屏时下发的 DIDL-Lite 元数据（AVTransport 的 CurrentURIMetaData） */
+function buildDidl(title : string, url : string) : string {
+	const safeTitle = escapeXml(title.trim().length > 0 ? title : '视频')
+	const protocolInfo = guessProtocolInfo(url)
+	return '<DIDL-Lite xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" ' +
+		'xmlns:dc="http://purl.org/dc/elements/1.1/" ' +
+		'xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/">' +
+		'<item id="0" parentID="-1" restricted="1">' +
+		'<dc:title>' + safeTitle + '</dc:title>' +
+		'<upnp:class>object.item.videoItem</upnp:class>' +
+		'<res protocolInfo="' + protocolInfo + '">' + escapeXml(url) + '</res>' +
+		'</item></DIDL-Lite>'
+}
+
+function buildSoapBody(serviceType : string, action : string, inner : string) : string {
+	return '<?xml version="1.0" encoding="utf-8"?>' +
+		'<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" ' +
+		's:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">' +
+		'<s:Body>' +
+		'<u:' + action + ' xmlns:u="' + serviceType + '">' +
+		inner +
+		'</u:' + action + '>' +
+		'</s:Body></s:Envelope>'
+}
+
+/** 从 XML 里取指定标签的文本，兼容命名空间前缀（如 <u:CurrentTransportState>） */
+function tagValue(xml : string, tag : string) : string {
+	const pattern = '<(?:[A-Za-z0-9_]+:)?' + tag + '[^>]*>([\\s\\S]*?)</(?:[A-Za-z0-9_]+:)?' + tag + '>'
+	const re = new RegExp(pattern)
+	const m = re.exec(xml)
+	if (m != null && m.length > 1) {
+		const v = m[1]
+		return v != null ? decodeXmlEntities(v.trim()) : ''
+	}
+	return ''
+}
+
+/**
+ * 把设备描述里的相对 controlURL 拼成绝对地址。
+ * 绝大多数电视返回 `/upnp/control/AVTransport1`，必须基于 LOCATION 的 scheme + host + port 拼接。
+ */
+function resolveUrl(location : string, controlUrl : string) : string {
+	const target = controlUrl.trim()
+	const lower = target.toLowerCase()
+	if (lower.startsWith('http://') || lower.startsWith('https://')) return target
+
+	const schemeIdx = location.indexOf('://')
+	const scheme = schemeIdx > 0 ? location.substring(0, schemeIdx) : 'http'
+	if (target.startsWith('//')) return scheme + ':' + target
+	const hostStart = schemeIdx + 3
+	if (hostStart < 3) return target
+
+	const slash = location.indexOf('/', hostStart)
+	const origin = slash < 0 ? location : location.substring(0, slash)
+	if (target.startsWith('/')) return origin + target
+
+	const lastSlash = location.lastIndexOf('/')
+	if (lastSlash >= hostStart) {
+		return location.substring(0, lastSlash + 1) + target
+	}
+	return origin + '/' + target
+}
+
+/** 在设备描述的 service 列表里找某类 service 的 controlURL（返回原始值，可能是相对路径） */
+function findServiceControlUrl(xml : string, typePrefix : string) : string {
+	let idx = 0
+	while (true) {
+		const start = xml.indexOf('<service', idx)
+		if (start < 0) return ''
+		// 排除 <serviceList>：<service 后面必须是 '>' 或空白
+		const after = xml.charAt(start + 8)
+		if (after != '>' && after != ' ' && after != '\t' && after != '\n' && after != '\r') {
+			idx = start + 8
+			continue
+		}
+		const end = xml.indexOf('</service>', start)
+		if (end < 0) return ''
+		const block = xml.substring(start, end)
+		const type = tagValue(block, 'serviceType')
+		if (type.startsWith(typePrefix)) {
+			return tagValue(block, 'controlURL')
+		}
+		idx = end + 10
+	}
+}
+
+function parseDeviceDescription(xml : string, location : string) : DeviceProfile | null {
+	if (xml.length == 0) return null
+	const name = tagValue(xml, 'friendlyName')
+	const udn = tagValue(xml, 'UDN')
+	const avRaw = findServiceControlUrl(xml, SERVICE_AV_TRANSPORT_PREFIX)
+	const rcRaw = findServiceControlUrl(xml, SERVICE_RENDERING_PREFIX)
+	const av = avRaw.length > 0 ? resolveUrl(location, avRaw) : ''
+	const rc = rcRaw.length > 0 ? resolveUrl(location, rcRaw) : ''
+	return {
+		name: name,
+		udn: udn,
+		avTransportControlUrl: av,
+		renderingControlUrl: rc
+	} as DeviceProfile
+}
+
+// ---------------------------------------------------------------- HTTP / SOAP
+
+function httpGetText(url : string, timeoutMs : number, success : (text : string) => void, failCb : (msg : string) => void) : void {
+	uni.request({
+		url: url,
+		method: 'GET',
+		timeout: timeoutMs,
+		responseType: 'text',
+		dataType: 'text',
+		header: {
+			'Content-Type': 'text/xml; charset=utf-8'
+		} as UTSJSONObject,
+		success: (res) => {
+			if (res.statusCode >= 200 && res.statusCode < 300) {
+				const data = res.data
+				success(data != null ? data as string : '')
+			} else {
+				failCb('HTTP ' + res.statusCode.toString())
+			}
+		},
+		fail: (err) => {
+			failCb(err.errMsg ?? 'HTTP 请求失败')
+		}
+	})
+}
+
+function postSoap(
+	controlUrl : string,
+	serviceType : string,
+	action : string,
+	inner : string,
+	timeoutMs : number,
+	success : (text : string) => void,
+	failCb : (msg : string) => void
+) : void {
+	const body = buildSoapBody(serviceType, action, inner)
+	uni.request({
+		url: controlUrl,
+		method: 'POST',
+		timeout: timeoutMs,
+		responseType: 'text',
+		dataType: 'text',
+		header: {
+			'Content-Type': 'text/xml; charset=utf-8',
+			// SOAPAction 的引号必须保留，部分电视端解析器严格要求
+			'SOAPAction': '"' + serviceType + '#' + action + '"'
+		} as UTSJSONObject,
+		data: body,
+		success: (res) => {
+			if (res.statusCode >= 200 && res.statusCode < 300) {
+				const data = res.data
+				success(data != null ? data as string : '')
+			} else {
+				failCb('HTTP ' + res.statusCode.toString())
+			}
+		},
+		fail: (err) => {
+			failCb(err.errMsg ?? 'HTTP 请求失败')
+		}
+	})
+}
+
+// ---------------------------------------------------------------- SSDP 扫描
+
+function buildSearchMessage(target : string) : string {
+	return 'M-SEARCH * HTTP/1.1\r\n' +
+		'HOST: ' + SSDP_ADDR + ':' + SSDP_PORT.toString() + '\r\n' +
+		// MAN 的引号必须保留，缺了设备会忽略整条请求
+		'MAN: "ssdp:discover"\r\n' +
+		'MX: ' + MX + '\r\n' +
+		'ST: ' + target + '\r\n' +
+		'USER-AGENT: HarmonyOS UPnP/1.1 DLNADOC/1.50\r\n' +
+		'\r\n'
+}
+
+function parseSsdpResponse(text : string) : SsdpHit | null {
+	const lines = text.split('\n')
+	if (lines.length == 0) return null
+	const first = lines[0].trim().toUpperCase()
+	const isSearchHit = first.startsWith('HTTP/1.1 200') || first.startsWith('HTTP/1.0 200')
+	const isNotify = first.startsWith('NOTIFY * HTTP/1.1')
+	if (!isSearchHit && !isNotify) return null
+
+	let location = ''
+	let usn = ''
+	for (let i = 0; i < lines.length; i++) {
+		const line = lines[i].trim()
+		const sep = line.indexOf(':')
+		if (sep <= 0) continue
+		const key = line.substring(0, sep).trim().toUpperCase()
+		const value = line.substring(sep + 1).trim()
+		if (key == 'LOCATION') {
+			location = value
+		} else if (key == 'USN') {
+			usn = value
+		} else if (key == 'NTS' && value.toUpperCase() == 'SSDP:BYEBYE') {
+			return null
+		}
+	}
+	if (location.length == 0) return null
+	// USN 形如 uuid:xxxx::urn:schemas-upnp-org:device:MediaRenderer:1，只取 :: 前的 uuid
+	const sepIdx = usn.indexOf('::')
+	const udn = sepIdx >= 0 ? usn.substring(0, sepIdx).trim() : usn.trim()
+	return { location: location, udn: udn } as SsdpHit
+}
+
+function addCandidate(location : string, udn : string) : void {
+	for (let i = 0; i < scanCandidates.length; i++) {
+		if (scanCandidates[i].location == location) return
+	}
+	scanCandidates.push({ location: location, udn: udn } as LocationCandidate)
+}
+
+function schedule(fn : () => void, delayMs : number) : void {
+	const id = setTimeout(fn, delayMs)
+	scanTimers.push(id)
+}
+
+function clearScanTimers() : void {
+	for (let i = 0; i < scanTimers.length; i++) {
+		clearTimeout(scanTimers[i])
+	}
+	scanTimers = new Array<number>()
+}
+
+function closeUdp(udp : socket.MulticastSocket | null) : void {
+	if (udp == null) return
+	try {
+		udp.off('message')
+	} catch (e) {
+	}
+	udp.close().catch((e : any) => {
+	})
+}
+
+function closeScanSocket() : void {
+	const udp = scanSocket
+	scanSocket = null
+	closeUdp(udp)
+}
+
+/** 当前默认网络的 IPv4 地址；失败返回空串（扫描仍可尝试绑 0.0.0.0） */
+function resolveLocalIpv4() : string {
+	try {
+		const net = connection.getDefaultNetSync()
+		if (net == null || net.netId == 0) return ''
+		const props = connection.getConnectionPropertiesSync(net)
+		const links = props.linkAddresses
+		for (let i = 0; i < links.length; i++) {
+			const ip = links[i].address.address
+			if (ip.length > 0 && ip.indexOf(':') < 0) return ip
+		}
+	} catch (e) {
+	}
+	return ''
+}
+
+function sendUdp(udp : socket.MulticastSocket, msg : string, address : string) : void {
+	const opts = {
+		data: msg,
+		address: { address: address, port: SSDP_PORT, family: 1 } as socket.NetAddress
+	} as socket.UDPSendOptions
+	udp.send(opts).catch((e : any) => {
+	})
+}
+
+/** 一轮：依次发 MediaRenderer / rootdevice / all 三个 ST，间隔 120ms */
+function sendSearchRound(udp : socket.MulticastSocket, token : number) : void {
+	if (scanCancelled || token != scanToken) return
+	let i = 0
+	const sendNext = () => {
+		if (scanCancelled || token != scanToken) return
+		if (i >= SEARCH_TARGETS.length) return
+		const msg = buildSearchMessage(SEARCH_TARGETS[i])
+		i++
+		sendUdp(udp, msg, SSDP_ADDR)
+		// 少数路由器不放行组播但放行广播，作为兜底
+		sendUdp(udp, msg, BROADCAST_ADDR)
+		if (i < SEARCH_TARGETS.length) {
+			schedule(sendNext, 120)
+		}
+	}
+	sendNext()
+}
+
+/** 收包结束后逐个拉设备描述，按 UDN 去重 */
+function describeNext(
+	candidates : Array<LocationCandidate>,
+	devices : Array<CastDevice>,
+	index : number,
+	token : number,
+	done : (found : Array<CastDevice>) => void
+) : void {
+	if (scanCancelled || token != scanToken || index >= candidates.length) {
+		done(devices)
+		return
+	}
+	const candidate = candidates[index]
+	httpGetText(candidate.location, 2500, (xml) => {
+		if (scanCancelled || token != scanToken) {
+			done(devices)
+			return
+		}
+		const profile = parseDeviceDescription(xml, candidate.location)
+		if (profile != null && profile.avTransportControlUrl.length > 0) {
+			const name = profile.name.length > 0 ? profile.name : '未知设备'
+			const udn = profile.udn.length > 0 ? profile.udn : (candidate.udn.length > 0 ? candidate.udn : candidate.location)
+			let exists = false
+			for (let i = 0; i < devices.length; i++) {
+				if (devices[i].udn == udn) {
+					exists = true
+					break
+				}
+			}
+			if (!exists) {
+				devices.push({ name: name, udn: udn, location: candidate.location } as CastDevice)
+			}
+		}
+		describeNext(candidates, devices, index + 1, token, done)
+	}, (msg) => {
+		// 坏 LOCATION：跳过，继续下一个；同设备的另一个 LOCATION 可能救回来
+		if (scanCancelled || token != scanToken) {
+			done(devices)
+			return
+		}
+		describeNext(candidates, devices, index + 1, token, done)
+	})
+}
+
+function finishScan(token : number) : void {
+	if (scanFinishing || token != scanToken) return
+	scanFinishing = true
+	clearScanTimers()
+	closeScanSocket()
+
+	const opts = scanOptions
+	scanOptions = null
+	if (opts == null || scanCancelled) return
+
+	// 快照候选列表：开始拉描述后即使被新一轮扫描替换，也不影响本次结果
+	const candidates = scanCandidates
+	const devices = new Array<CastDevice>()
+	describeNext(candidates, devices, 0, token, (found) => {
+		if (scanCancelled || token != scanToken) return
+		const foundPrefix = found.length > 0 ? 'found=' + found.length.toString() + '; ' : ''
+		lastScanDiag = foundPrefix + 'iface=' + scanIface + ', packets=' + scanPackets.toString() + ', candidates=' + candidates.length.toString()
+		opts.success?.(found)
+		opts.complete?.()
+	})
+}
+
+/** 关闭本次扫描自己的 socket；只有 token 仍是当前扫描时才清模块引用，避免误关新一轮的 socket */
+function abandonUdp(udp : socket.MulticastSocket, token : number) : void {
+	if (token == scanToken) scanSocket = null
+	closeUdp(udp)
+}
+
+async function openAndScan(timeoutMs : number, token : number) : Promise<void> {
+	let udp : socket.MulticastSocket
+	try {
+		// API 20 起 addMembership / setMulticastTTL 只存在于 MulticastSocket（继承 UDPSocket）
+		udp = socket.constructMulticastSocketInstance()
+	} catch (e) {
+		if (scanCancelled || token != scanToken) return
+		const opts = scanOptions
+		scanOptions = null
+		if (opts != null) {
+			opts.fail?.(failResult(ERR_NETWORK, '创建 UDP Socket 失败'))
+			opts.complete?.()
+		}
+		return
+	}
+
+	if (scanCancelled || token != scanToken) {
+		closeUdp(udp)
+		return
+	}
+	scanSocket = udp
+	udp.on('message', (info : socket.SocketMessageInfo) => {
+		if (scanCancelled || token != scanToken) return
+		scanPackets++
+		const text = buffer.from(info.message).toString('utf-8')
+		const hit = parseSsdpResponse(text)
+		if (hit != null) {
+			addCandidate(hit.location, hit.udn)
+		}
+	})
+
+	const localIp = resolveLocalIpv4()
+	scanIface = localIp.length > 0 ? localIp : 'none'
+
+	try {
+		// 先绑定到默认网络，避免多网卡时组播从蜂窝/VPN 发出
+		try {
+			const net = connection.getDefaultNetSync()
+			if (net != null && net.netId != 0) {
+				await net.bindSocket(udp)
+			}
+		} catch (e) {
+		}
+
+		try {
+			const bindAddress = localIp.length > 0 ? localIp : '0.0.0.0'
+			await udp.bind({ address: bindAddress, port: 0, family: 1 } as socket.NetAddress)
+		} catch (e) {
+			// 绑具体网卡地址失败时退回 0.0.0.0；再失败就整体失败
+			await udp.bind({ address: '0.0.0.0', port: 0, family: 1 } as socket.NetAddress)
+		}
+
+		try {
+			await udp.setExtraOptions({
+				broadcast: true,
+				reuseAddress: true,
+				receiveBufferSize: 65536
+			} as socket.UDPExtraOptions)
+		} catch (e) {
+		}
+
+		// 尽力加入组播组：能收到 NOTIFY 与少数设备的组播回包；失败不影响单播 M-SEARCH
+		try {
+			await udp.addMembership({ address: SSDP_ADDR, port: SSDP_PORT, family: 1 } as socket.NetAddress)
+		} catch (e) {
+		}
+
+		try {
+			await udp.setMulticastTTL(4)
+		} catch (e) {
+		}
+
+		// await 期间可能已被 stopScan / 新一轮扫描取代
+		if (scanCancelled || token != scanToken) {
+			abandonUdp(udp, token)
+			return
+		}
+
+		// 两轮 M-SEARCH：UDP 丢包常见，重发显著提升发现率
+		sendSearchRound(udp, token)
+		schedule(() => {
+			sendSearchRound(udp, token)
+		}, 1500)
+		schedule(() => {
+			finishScan(token)
+		}, timeoutMs)
+	} catch (e) {
+		abandonUdp(udp, token)
+		if (scanCancelled || token != scanToken) return
+		scanIface = 'none'
+		clearScanTimers()
+		const opts = scanOptions
+		scanOptions = null
+		if (opts != null) {
+			opts.fail?.(failResult(ERR_NETWORK, '无法绑定本地 UDP 端口，请确认手机已连接 Wi-Fi'))
+			opts.complete?.()
+		}
+	}
+}
+
+/**
+ * 扫描局域网内的 DLNA 接收端。
+ * 扫描结束后回调 success（即使没找到设备也回调空数组）。
+ */
+export function scanDevices(options : ScanOptions) : void {
+	stopScan()
+	scanCancelled = false
+	scanFinishing = false
+	scanToken++
+	const token = scanToken
+	scanOptions = options
+	scanCandidates = new Array<LocationCandidate>()
+	scanPackets = 0
+	lastScanDiag = ''
+	scanIface = 'none'
+	const timeout = (options.timeout != null && options.timeout! > 0) ? options.timeout! : 4000
+	openAndScan(timeout, token)
+}
+
+/** 最近一次扫描的诊断信息（网卡/收包数/候选数），搜不到设备时用于定位 */
+export function scanDiagnostics() : string {
+	return lastScanDiag
+}
+
+/** 停止扫描，释放 socket 与定时器 */
+export function stopScan() : void {
+	scanCancelled = true
+	scanFinishing = true
+	scanToken++
+	scanOptions = null
+	clearScanTimers()
+	closeScanSocket()
+}
+
+// ---------------------------------------------------------------- 连接
+
+export function connect(device : CastDevice, options : CastOptions | null = null) : void {
+	if (device.location.length == 0) {
+		fail(options, ERR_PARAM, '设备地址为空')
+		return
+	}
+	httpGetText(device.location, 4000, (xml) => {
+		const profile = parseDeviceDescription(xml, device.location)
+		if (profile == null) {
+			fail(options, ERR_DEVICE_UNREACHABLE, '设备描述解析失败')
+			return
+		}
+		if (profile.avTransportControlUrl.length == 0) {
+			fail(options, ERR_DEVICE_UNREACHABLE, '该设备不支持 AVTransport，无法投屏')
+			return
+		}
+		currentProfile = profile
+		currentDevice = device
+		succeed(options)
+	}, (msg) => {
+		fail(options, ERR_DEVICE_UNREACHABLE, '无法读取设备描述：' + msg)
+	})
+}
+
+export function disconnect() : void {
+	currentProfile = null
+	currentDevice = null
+}
+
+export function isConnected() : boolean {
+	return currentProfile != null
+}
+
+export function getConnectedName() : string {
+	const d = currentDevice
+	if (d != null) return d.name
+	return ''
+}
+
+// ---------------------------------------------------------------- 播放/控制
+
+export function play(url : string, title : string, options : CastOptions | null = null) : void {
+	const targetUrl = url.trim()
+	if (targetUrl.length == 0) {
+		fail(options, ERR_PARAM, '播放地址为空')
+		return
+	}
+	if (!isCastableUrl(targetUrl)) {
+		fail(options, ERR_PARAM, '投屏地址必须是 http/https，本地文件无法投屏')
+		return
+	}
+	const profile = currentProfile
+	if (profile == null) {
+		fail(options, ERR_NOT_CONNECTED, '未连接设备')
+		return
+	}
+
+	const metaData = buildDidl(title, targetUrl)
+	const inner = '<InstanceID>0</InstanceID>' +
+		'<CurrentURI>' + escapeXml(targetUrl) + '</CurrentURI>' +
+		'<CurrentURIMetaData>' + escapeXml(metaData) + '</CurrentURIMetaData>'
+
+	postSoap(profile.avTransportControlUrl, SERVICE_AV_TRANSPORT, 'SetAVTransportURI', inner, 5000, (resp) => {
+		const errCode = toInt(tagValue(resp, 'errorCode'))
+		if (errCode != 0) {
+			fail(options, ERR_STATE, '设备拒绝了该地址（错误码 ' + errCode.toString() + '），可能电视不支持此视频格式')
+			return
+		}
+		const playInner = '<InstanceID>0</InstanceID><Speed>1</Speed>'
+		postSoap(profile.avTransportControlUrl, SERVICE_AV_TRANSPORT, 'Play', playInner, 5000, (resp2) => {
+			const code2 = toInt(tagValue(resp2, 'errorCode'))
+			if (code2 != 0) {
+				fail(options, ERR_STATE, 'Play 失败（错误码 ' + code2.toString() + '）')
+				return
+			}
+			succeed(options)
+		}, (msg) => {
+			fail(options, ERR_DEVICE_UNREACHABLE, 'Play 无响应')
+		})
+	}, (msg) => {
+		fail(options, ERR_DEVICE_UNREACHABLE, 'SetAVTransportURI 无响应，投屏失败')
+	})
+}
+
+function avAction(action : string, inner : string, options : CastOptions | null) : void {
+	const profile = currentProfile
+	if (profile == null) {
+		fail(options, ERR_NOT_CONNECTED, '未连接设备')
+		return
+	}
+	postSoap(profile.avTransportControlUrl, SERVICE_AV_TRANSPORT, action, inner, 4000, (resp) => {
+		const errCode = toInt(tagValue(resp, 'errorCode'))
+		if (errCode != 0) {
+			fail(options, ERR_STATE, action + ' 失败（错误码 ' + errCode.toString() + '）')
+			return
+		}
+		succeed(options)
+	}, (msg) => {
+		fail(options, ERR_DEVICE_UNREACHABLE, action + ' 无响应')
+	})
+}
+
+export function pause(options : CastOptions | null = null) : void {
+	avAction('Pause', '<InstanceID>0</InstanceID>', options)
+}
+
+export function resume(options : CastOptions | null = null) : void {
+	avAction('Play', '<InstanceID>0</InstanceID><Speed>1</Speed>', options)
+}
+
+export function stop(options : CastOptions | null = null) : void {
+	avAction('Stop', '<InstanceID>0</InstanceID>', options)
+}
+
+/** 跳转到指定秒数 */
+export function seek(position : number, options : CastOptions | null = null) : void {
+	if (position < 0) {
+		fail(options, ERR_PARAM, '进度不能为负')
+		return
+	}
+	const hhmmss = formatHms(position)
+	avAction('Seek', '<InstanceID>0</InstanceID><Unit>REL_TIME</Unit><Target>' + hhmmss + '</Target>', options)
+}
+
+/** 设置音量 0-100（RenderingControl） */
+export function setVolume(volume : number, options : CastOptions | null = null) : void {
+	const profile = currentProfile
+	if (profile == null) {
+		fail(options, ERR_NOT_CONNECTED, '未连接设备')
+		return
+	}
+	if (profile.renderingControlUrl.length == 0) {
+		fail(options, ERR_STATE, '该设备不支持音量控制')
+		return
+	}
+	let v = Math.floor(volume)
+	if (v < 0) v = 0
+	if (v > 100) v = 100
+	const inner = '<InstanceID>0</InstanceID><Channel>Master</Channel><DesiredVolume>' + v.toString() + '</DesiredVolume>'
+	postSoap(profile.renderingControlUrl, SERVICE_RENDERING, 'SetVolume', inner, 4000, (resp) => {
+		const errCode = toInt(tagValue(resp, 'errorCode'))
+		if (errCode != 0) {
+			fail(options, ERR_STATE, '设备拒绝设置音量（错误码 ' + errCode.toString() + '）')
+			return
+		}
+		lastVolume = v
+		succeed(options)
+	}, (msg) => {
+		fail(options, ERR_DEVICE_UNREACHABLE, 'SetVolume 无响应')
+	})
+}
+
+function readVolume(success : (v : number) => void, failCb : () => void) : void {
+	const profile = currentProfile
+	if (profile == null || profile.renderingControlUrl.length == 0) {
+		failCb()
+		return
+	}
+	const inner = '<InstanceID>0</InstanceID><Channel>Master</Channel>'
+	postSoap(profile.renderingControlUrl, SERVICE_RENDERING, 'GetVolume', inner, 2500, (resp) => {
+		const raw = tagValue(resp, 'CurrentVolume').trim()
+		if (raw.length > 0) {
+			success(toInt(raw))
+		} else {
+			failCb()
+		}
+	}, (msg) => {
+		failCb()
+	})
+}
+
+/** 读取当前播放状态（含进度）。任何一项失败都不抛异常，返回 UNKNOWN 兜底。 */
+export function getStatus(callback : (status : UtsCastStatus) => void) : void {
+	const profile = currentProfile
+	if (profile == null) {
+		callback(lastStatus)
+		return
+	}
+	if (statusBusy) {
+		callback(lastStatus)
+		return
+	}
+	statusBusy = true
+
+	let pending = 2
+	if (profile.renderingControlUrl.length > 0) pending = 3
+	let state = 'UNKNOWN'
+	let position = 0
+	let duration = 0
+	let volume = lastVolume
+
+	const done = () => {
+		pending--
+		if (pending <= 0) {
+			const st = {
+				state: state,
+				position: position,
+				duration: duration,
+				volume: volume,
+				muted: false
+			} as UtsCastStatus
+			lastStatus = st
+			statusBusy = false
+			callback(st)
+		}
+	}
+
+	postSoap(profile.avTransportControlUrl, SERVICE_AV_TRANSPORT, 'GetTransportInfo', '<InstanceID>0</InstanceID>', 2500, (resp) => {
+		const s = tagValue(resp, 'CurrentTransportState')
+		if (s.length > 0) state = s
+		done()
+	}, (msg) => {
+		done()
+	})
+
+	postSoap(profile.avTransportControlUrl, SERVICE_AV_TRANSPORT, 'GetPositionInfo', '<InstanceID>0</InstanceID>', 2500, (resp) => {
+		position = parseHms(tagValue(resp, 'RelTime'))
+		duration = parseHms(tagValue(resp, 'TrackDuration'))
+		done()
+	}, (msg) => {
+		done()
+	})
+
+	if (profile.renderingControlUrl.length > 0) {
+		readVolume((v) => {
+			volume = v
+			lastVolume = v
+			done()
+		}, () => {
+			done()
+		})
+	}
+}

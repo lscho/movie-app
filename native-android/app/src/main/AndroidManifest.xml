@@ -5,9 +5,29 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
+    <!-- DLNA 投屏：SSDP 设备发现需要组播。
+         CHANGE_WIFI_MULTICAST_STATE 必填，缺了会出现「第一次能搜到设备、之后再也搜不到」
+         （Wi-Fi 省电状态下系统丢弃组播包）。 -->
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+
+    <!-- uni-web-view aar 会带入 CAMERA / ACCESS_FINE_LOCATION 权限，进而隐含
+         android.hardware.camera、android.hardware.location 两个 required uses-feature，
+         无摄像头/无定位的电视盒子会被安装器或应用市场判定「应用不兼容」。
+         本应用只做影视搜索/播放，用不到这两项权限，从合并结果中移除。 -->
+    <uses-permission android:name="android.permission.CAMERA" tools:node="remove" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" tools:node="remove" />
+
     <!-- 兼容 TV / 无触屏设备 -->
     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
     <uses-feature android:name="android.software.leanback" android:required="false" />
+    <!-- 兜底：即使将来权限被重新引入，也不让相机/定位成为硬性要求 -->
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <uses-feature android:name="android.hardware.camera.any" android:required="false" />
+    <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
+    <uses-feature android:name="android.hardware.location" android:required="false" />
+    <uses-feature android:name="android.hardware.location.gps" android:required="false" />
+    <uses-feature android:name="android.hardware.location.network" android:required="false" />
 
     <application
         android:name="io.dcloud.uniappxv.UniApplication"

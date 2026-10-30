@@ -14,6 +14,8 @@ native-android/.idea/
 native-android/build/
 native-android/app/build/
 native-android/app/src/main/assets/apps/
+# UTS 插件 Kotlin 桥接产物（build-local.sh 从 HBuilderX 编译结果同步，源文件在 uni_modules/）
+native-android/native-dlna/src/main/java/uts/
 *.iml
 
 # 敏感信息（签名证书与密码留在本地）

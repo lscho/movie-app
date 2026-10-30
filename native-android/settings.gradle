@@ -28,3 +28,5 @@ dependencyResolutionManagement {
 
 rootProject.name = "quanmin-movie-android"
 include ':app'
+// DLNA 投屏：纯 Kotlin 实现（SSDP + SOAP），零第三方依赖
+include ':native-dlna'

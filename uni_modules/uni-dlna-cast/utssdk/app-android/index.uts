@@ -1,0 +1,256 @@
+// Android 平台实现：UTS 薄桥接 → 原生 Kotlin 模块 com.quanmin.dlnacast
+//
+// 跨语言边界的铁律（踩过坑后总结，改代码前务必读）：
+// 1) 原生方法只返回 **String（JSON）或基本类型**，绝不返回自定义 Kotlin 类 / Kotlin Array。
+//    UTS 编译器对 Kotlin data class 属性访问、Array.length 的映射不可靠，会得到
+//    Unresolved reference 'getName' / 'length' 之类的编译错误。
+// 2) 对外 API 用 `export function`，不要用「函数类型 typealias + export const」
+//    —— UTS 不会把函数类型 typealias 输出到生成的 Kotlin 里。
+// 3) 所有原生 Blocking 方法都是同步阻塞的，这里统一用 runIo 切到 io 线程。
+
+import Context from 'android.content.Context'
+import { UTSAndroid } from 'io.dcloud.uts'
+import DlnaCastApi from 'com.quanmin.dlnacast.DlnaCastApi'
+
+import { CastDevice, CastResult as UtsCastResult, ScanOptions, CastOptions, CastStatus as UtsCastStatus } from '../interface.uts'
+
+/** 解析 {"errCode":0,"errMsg":"ok"} */
+function parseResult(json : string) : UtsCastResult {
+	let errCode = -1
+	let errMsg = '原生层未返回结果'
+	try {
+		const obj = JSON.parseObject(json)
+		if (obj != null) {
+			errCode = obj.getNumber('errCode') ?? -1
+			errMsg = obj.getString('errMsg') ?? ''
+		}
+	} catch (e : any) {
+		errMsg = '结果解析失败'
+	}
+	return { errCode: errCode, errMsg: errMsg } as UtsCastResult
+}
+
+/**
+ * 解析设备列表。原生侧返回 {"devices":[{"name":..,"udn":..,"location":..}, ...]}。
+ * 只用 UTSJSONObject.getArray / UTSArray.get(Number) 这两个稳定 API，
+ * 不用 getJSONObject（UTSArray 上没有这个方法，会得到 Unresolved reference）。
+ */
+function parseDevices(json : string) : Array<CastDevice> {
+	let list : Array<CastDevice> = []
+	try {
+		const root = JSON.parseObject(json)
+		if (root != null) {
+			const arr = root.getArray('devices')
+			if (arr != null) {
+				for (let i = 0; i < arr.length; i++) {
+					const item = arr.get(i) as UTSJSONObject
+					if (item == null) continue
+					list.push({
+						name: item.getString('name') ?? '',
+						udn: item.getString('udn') ?? '',
+						location: item.getString('location') ?? ''
+					} as CastDevice)
+				}
+			}
+		}
+	} catch (e : any) {
+		// 解析失败返回空列表，让 UI 走「未找到设备」
+	}
+	return list
+}
+
+/** 解析播放状态 */
+function parseStatus(json : string) : UtsCastStatus {
+	let state = 'UNKNOWN'
+	let position = 0
+	let duration = 0
+	let volume = 0
+	let muted = false
+	try {
+		const obj = JSON.parseObject(json)
+		if (obj != null) {
+			state = obj.getString('state') ?? 'UNKNOWN'
+			position = obj.getNumber('position') ?? 0
+			duration = obj.getNumber('duration') ?? 0
+			volume = obj.getNumber('volume') ?? 0
+			muted = obj.getBoolean('muted') ?? false
+		}
+	} catch (e : any) {
+		// 保持 UNKNOWN
+	}
+	return { state: state, position: position, duration: duration, volume: volume, muted: muted } as UtsCastStatus
+}
+
+/** 确保原生层已初始化（幂等） */
+function ensureInit() : void {
+	const ctx = UTSAndroid.getAppContext()
+	if (ctx != null) {
+		DlnaCastApi.init(ctx as Context)
+	}
+}
+
+/** 统一处理「io 线程执行 → 主线程回调」 */
+function runIo(task : () => void) : void {
+	UTSAndroid.getDispatcher("io").async(function(_) {
+		task()
+	})
+}
+
+/** 把 JSON 结果派发到 UTS 回调（统一 errCode 判定） */
+function dispatchResult(json : string, options : CastOptions | null) : void {
+	UTSAndroid.getDispatcher("main").async(function(_) {
+		const res = parseResult(json)
+		if (res.errCode == 0) {
+			options?.success?.(res)
+		} else {
+			options?.fail?.(res)
+		}
+		options?.complete?.(res)
+	})
+}
+
+/**
+ * 扫描局域网内的 DLNA 接收端。
+ * 扫描结束后回调 success（即使没找到设备也回调空数组）。
+ */
+export function scanDevices(options : ScanOptions) : void {
+	ensureInit()
+	const timeout = (options.timeout != null && options.timeout! > 0) ? options.timeout! : 4000
+
+	runIo(function() {
+		let json = '[]'
+		let errorMsg = ''
+		try {
+			json = DlnaCastApi.scanBlocking(timeout.toLong())
+		} catch (e : any) {
+			errorMsg = e.message != null ? e.message! : '扫描异常'
+		}
+
+		UTSAndroid.getDispatcher("main").async(function(_) {
+			if (errorMsg.length > 0) {
+				const res = { errCode: 1002, errMsg: errorMsg } as UtsCastResult
+				options.fail?.(res)
+			} else {
+				options.success?.(parseDevices(json))
+			}
+			options.complete?.()
+		})
+	})
+}
+
+/** 最近一次扫描的诊断信息（网卡/收包数/候选数），搜不到设备时用于定位 */
+export function scanDiagnostics() : string {
+	return DlnaCastApi.scanDiagnostics()
+}
+
+/** 停止扫描（释放组播锁与 Socket） */
+export function stopScan() : void {
+	runIo(function() {
+		DlnaCastApi.stopScan()
+	})
+}
+
+/** 连接指定设备，解析其 AVTransport / RenderingControl 控制地址 */
+export function connect(device : CastDevice, options : CastOptions | null = null) : void {
+	ensureInit()
+	runIo(function() {
+		let json = ''
+		try {
+			json = DlnaCastApi.connectBlocking(device.name, device.udn, device.location)
+		} catch (e : any) {
+			json = '{"errCode":1003,"errMsg":"连接异常"}'
+		}
+		dispatchResult(json, options)
+	})
+}
+
+/** 断开当前设备（仅解除本机控制关系，不会让电视停止播放） */
+export function disconnect() : void {
+	DlnaCastApi.disconnect()
+}
+
+/** 是否已连接设备 */
+export function isConnected() : boolean {
+	return DlnaCastApi.isConnected()
+}
+
+/** 当前连接的设备名，未连接返回空串 */
+export function getConnectedName() : string {
+	return DlnaCastApi.getConnectedName()
+}
+
+/**
+ * 投屏播放。url 必须是电视端可直接拉取的地址（公网 http/https 或局域网 http 服务），
+ * 不支持 file:// 、blob: 、相册本地路径。
+ */
+export function play(url : string, title : string, options : CastOptions | null = null) : void {
+	runIo(function() {
+		let json = ''
+		try {
+			json = DlnaCastApi.playBlocking(url, title)
+		} catch (e : any) {
+			json = '{"errCode":1003,"errMsg":"投屏异常"}'
+		}
+		dispatchResult(json, options)
+	})
+}
+
+/** 把无参控制指令收敛成一个通用实现 */
+function simpleCommand(call : () => string, options : CastOptions | null) : void {
+	runIo(function() {
+		let json = ''
+		try {
+			json = call()
+		} catch (e : any) {
+			json = '{"errCode":1003,"errMsg":"控制指令异常"}'
+		}
+		dispatchResult(json, options)
+	})
+}
+
+export function pause(options : CastOptions | null = null) : void {
+	simpleCommand(function() : string {
+		return DlnaCastApi.pauseBlocking()
+	}, options)
+}
+
+export function resume(options : CastOptions | null = null) : void {
+	simpleCommand(function() : string {
+		return DlnaCastApi.resumeBlocking()
+	}, options)
+}
+
+export function stop(options : CastOptions | null = null) : void {
+	simpleCommand(function() : string {
+		return DlnaCastApi.stopBlocking()
+	}, options)
+}
+
+/** 跳转到指定秒数 */
+export function seek(position : number, options : CastOptions | null = null) : void {
+	simpleCommand(function() : string {
+		return DlnaCastApi.seekBlocking(Math.floor(position).toInt())
+	}, options)
+}
+
+/** 设置音量，0-100 */
+export function setVolume(volume : number, options : CastOptions | null = null) : void {
+	simpleCommand(function() : string {
+		return DlnaCastApi.setVolumeBlocking(Math.floor(volume).toInt())
+	}, options)
+}
+
+/** 读取当前播放状态（含进度）；读取失败返回 UNKNOWN，不抛异常 */
+export function getStatus(callback : (status : UtsCastStatus) => void) : void {
+	runIo(function() {
+		let json = '{"state":"UNKNOWN","position":0,"duration":0,"volume":0,"muted":false}'
+		try {
+			json = DlnaCastApi.statusBlocking()
+		} catch (e : any) {
+			// 保持 UNKNOWN
+		}
+		UTSAndroid.getDispatcher("main").async(function(_) {
+			callback(parseStatus(json))
+		})
+	})
+}

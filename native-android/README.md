@@ -13,6 +13,10 @@ movie-app/（本仓库根 = uni-app x 工程）
     │   └── plugins/               # gradle 插件 jar（uts-kotlin / auto-register）
     ├── settings.gradle / build.gradle / gradle.properties
     ├── gradle/ + gradlew          # gradle 9.2.1 wrapper（腾讯镜像）
+    ├── native-dlna/               # DLNA 投屏：纯 Kotlin（SSDP + SOAP），另含 UTS 桥接 Kotlin
+    │   └── src/main/java/
+    │       ├── com/quanmin/dlnacast/       # 原生核心，可用 gradle 真实编译
+    │       └── uts/sdk/modules/uniDlnaCast/ # 由 HBuilderX 生成，build-local.sh 自动同步
     └── app/
         ├── build.gradle           # 包名 com.quanmin.movie，minSdk 23 / target 36
         └── src/main/
@@ -63,10 +67,12 @@ export JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home"
 |---|---|---|
 | appid | `__UNI__F871D3B` | HBuilderX 导入项目时自动分配，须与 `AndroidManifest.xml` 的 `DCLOUD_UNI_APPID` 和 assets 目录名三方一致 |
 | 包名 | `com.quanmin.movie` | 改包名需同步改 `applicationId` |
-| ABI | `arm64-v8a` | TV/手机通用；需要模拟器再在 `abiFilters` 加 `x86_64` |
+| ABI | `arm64-v8a` + `armeabi-v7a` | 双 ABI 覆盖 64/32 位电视盒子；需要 x86_64 模拟器再在 `abiFilters` 追加 |
 | TV | LEANBACK_LAUNCHER + banner | 电视桌面可直接看到并启动 |
 | m3u8/HLS | media3-exoplayer-hls 1.8.0 | video 组件播放所需 |
 | 网络 | 已声明 INTERNET 权限，允许明文流量 | 兼容部分 http 资源 CDN |
+| 投屏 | `:native-dlna` 模块，零第三方依赖 | SSDP 发现 + AVTransport/RenderingControl 控制；需 `CHANGE_WIFI_MULTICAST_STATE` |
+| UTS 插件 | `io.dcloud.uts.kotlin` + `io.dcloud.uts.auto-register` + KSP 2.3.11 | auto-register 依赖 KSP，根 build.gradle 必须声明，否则插件模块无法应用 |
 
 ## 版本升级注意
 

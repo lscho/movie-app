@@ -20,7 +20,9 @@ android {
         versionName appVersionName
 
         ndk {
-            abiFilters 'arm64-v8a'
+            // 电视/盒子兼容：同时出 64 位(arm64-v8a) 与 32 位(armeabi-v7a)
+            // 大量老电视盒子只有 32 位 ABI，仅含 arm64 的 APK 会被安装器判定"应用不兼容"
+            abiFilters 'arm64-v8a', 'armeabi-v7a'
         }
     }
 
@@ -128,4 +130,7 @@ dependencies {
     // video 组件的 m3u8(HLS) 播放支持
     implementation "androidx.media3:media3-exoplayer:1.8.0"
     implementation "androidx.media3:media3-exoplayer-hls:1.8.0"
+
+    // DLNA 投屏（纯 Kotlin：SSDP 发现 + AVTransport/RenderingControl 控制）
+    implementation project(':native-dlna')
 }

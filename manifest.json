@@ -1,74 +1,79 @@
 {
-	"name": "超超影视",
-	"appid": "__UNI__F871D3B",
-	"description": "影视聚合搜索与播放",
-	"versionName": "1.0.0",
-	"versionCode": "100",
-	"uni-app-x": {
-		"styleIsolationVersion": "2",
-		"vapor": true,
-		"vapor-render-target": "bytecode",
-		"vapor-default-script-lang": "uts"
-	},
-	"uniStatistics": {
-		"enable": false
-	},
-	"vueVersion": "3",
-	"app": {
-		"distribute": {
-			"icons": {
-				"android": {
-					"hdpi": "",
-					"xhdpi": "",
-					"xxhdpi": "",
-					"xxxhdpi": ""
-				}
-			}
-		}
-	},
-	"app-android": {
-		"minSdkVersion": 23,
-		"distribute": {
-			"modules": {
-				"VideoPlayer": {}
-			},
-			"icons": {
-				"hdpi": "static/icons/icon_hdpi.png",
-				"xhdpi": "static/icons/icon_xhdpi.png",
-				"xxhdpi": "static/icons/icon_xxhdpi.png",
-				"xxxhdpi": "static/icons/icon_xxxhdpi.png"
-			},
-			"adaptiveIcons": {
-				"foreground": {
-					"hdpi": "static/icons/icon_foreground.png",
-					"xhdpi": "static/icons/icon_foreground.png",
-					"xxhdpi": "static/icons/icon_foreground.png",
-					"xxxhdpi": "static/icons/icon_foreground.png"
-				},
-				"background": {
-					"hdpi": "static/icons/icon_bg.png",
-					"xhdpi": "static/icons/icon_bg.png",
-					"xxhdpi": "static/icons/icon_bg.png",
-					"xxxhdpi": "static/icons/icon_bg.png"
-				}
-			},
-			"splashScreens": {
-				"default": {}
-			}
-		}
-	},
-	"app-ios": {
-		"distribute": {
-			"modules": {
-				"VideoPlayer": {}
-			},
-			"icons": {},
-			"splashScreens": {}
-		}
-	},
-	"web": {
-		"router": {
-			"mode": ""
-		}
-	}
+    "name" : "超超影视",
+    "appid" : "__UNI__F871D3B",
+    "description" : "影视聚合搜索与播放",
+    "versionName" : "1.0.1",
+    "versionCode" : "101",
+    "uni-app-x" : {
+        "styleIsolationVersion" : "2",
+        "vapor" : true,
+        "vapor-render-target" : "bytecode",
+        "vapor-default-script-lang" : "uts"
+    },
+    "uniStatistics" : {
+        "enable" : false
+    },
+    "vueVersion" : "3",
+    "app" : {
+        "distribute" : {
+            "icons" : {
+                "android" : {
+                    "hdpi" : "",
+                    "xhdpi" : "",
+                    "xxhdpi" : "",
+                    "xxxhdpi" : ""
+                }
+            }
+        }
+    },
+    "app-android" : {
+        "minSdkVersion" : 23,
+        "distribute" : {
+            "modules" : {
+                "VideoPlayer" : {}
+            },
+            "icons" : {
+                "hdpi" : "static/icons/icon_hdpi.png",
+                "xhdpi" : "static/icons/icon_xhdpi.png",
+                "xxhdpi" : "static/icons/icon_xxhdpi.png",
+                "xxxhdpi" : "static/icons/icon_xxxhdpi.png"
+            },
+            "adaptiveIcons" : {
+                "foreground" : {
+                    "hdpi" : "static/icons/icon_foreground.png",
+                    "xhdpi" : "static/icons/icon_foreground.png",
+                    "xxhdpi" : "static/icons/icon_foreground.png",
+                    "xxxhdpi" : "static/icons/icon_foreground.png"
+                },
+                "background" : {
+                    "hdpi" : "static/icons/icon_bg.png",
+                    "xhdpi" : "static/icons/icon_bg.png",
+                    "xxhdpi" : "static/icons/icon_bg.png",
+                    "xxxhdpi" : "static/icons/icon_bg.png"
+                }
+            },
+            "splashScreens" : {
+                "default" : {}
+            }
+        }
+    },
+    "app-ios" : {
+        "distribute" : {
+            "modules" : {
+                "VideoPlayer" : {}
+            },
+            "icons" : {},
+            "splashScreens" : {}
+        }
+    },
+    "app-harmony" : {
+        "distribute" : {
+            "bundleName" : "com.example.chaochao"
+        }
+    },
+    "web" : {
+        "router" : {
+            "mode" : ""
+        }
+    }
 }

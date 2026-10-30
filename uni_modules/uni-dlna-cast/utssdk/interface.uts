@@ -1,0 +1,51 @@
+// DLNA 投屏插件对外接口声明（仅类型）
+// 说明：投屏是「电视自己拉流」，手机只下发 URL 与控制指令，
+//       因此投屏开始后手机可以息屏 / 切后台 / 被系统回收，电视继续播放。
+
+/** 局域网内发现的一台 DLNA 接收端（电视 / 盒子 / 投影） */
+export type CastDevice = {
+	/** 展示名，如「小米电视4A」 */
+	name : string
+	/** 设备唯一标识 UDN，用于去重与记忆 */
+	udn : string
+	/** 设备描述 XML 地址 */
+	location : string
+}
+
+/** 统一回调结果 */
+export type CastResult = {
+	/** 0 表示成功 */
+	errCode : number
+	errMsg : string
+}
+
+/** 设备扫描参数 */
+export type ScanOptions = {
+	/** 扫描时长（毫秒），默认 4000 */
+	timeout ?: number
+	/** 扫描结束，返回去重后的设备列表（可能为空数组） */
+	success ?: (devices : Array<CastDevice>) => void
+	/** 扫描异常（如无网络、组播不可用） */
+	fail ?: (res : CastResult) => void
+	complete ?: () => void
+}
+
+/** 控制指令参数 */
+export type CastOptions = {
+	success ?: (res : CastResult) => void
+	fail ?: (res : CastResult) => void
+	complete ?: (res : CastResult) => void
+}
+
+/** 播放器状态 */
+export type CastStatus = {
+	/** PLAYING / PAUSED_PLAYBACK / STOPPED / TRANSITIONING / NO_MEDIA_PRESENT / UNKNOWN */
+	state : string
+	/** 当前播放位置（秒） */
+	position : number
+	/** 总时长（秒），未知为 0 */
+	duration : number
+	/** 音量 0-100 */
+	volume : number
+	muted : boolean
+}

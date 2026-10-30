@@ -1,0 +1,57 @@
+plugins {
+    alias(libs.plugins.android.library)
+    // UTS 插件模块必需：编译 uts 语法产物 + 自动注册（离线SDK 必须带 auto-register）
+    id 'io.dcloud.uts.kotlin'
+    id 'io.dcloud.uts.auto-register'
+}
+
+// 本模块承担两个角色：
+// 1) com.quanmin.dlnacast —— 手写的 DLNA 核心（SSDP + SOAP），可用 gradle 真实编译
+// 2) uts.sdk.modules.uniDlnaCast —— HBuilderX 由 utssdk/app-android/index.uts 生成的桥接层
+//    由 build-local.sh 从 unpackage/resources/app-android/uni_modules/ 同步进来
+android {
+    namespace 'com.quanmin.dlnacast'
+    compileSdk 36
+
+    defaultConfig {
+        minSdk 23
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+dependencies {
+    // UTS 运行时类（UTSAndroid / UTSObject / UTSArray 等）编译期需要
+    def dcloudSdkDir = file('../dcloud-sdk').canonicalFile
+    compileOnly fileTree(
+            dir: dcloudSdkDir.toString() + '/SDK/libs',
+            include: [
+                    'app-common-release.aar',
+                    'app-runtime-release.aar',
+                    'uts-runtime-release.aar',
+                    'uni-dialogPage-release.aar',
+                    'uni-event-release.aar',
+                    'uni-crash-release.aar',
+                    'uni-theme-release.aar',
+                    'uni-prompt-release.aar'
+            ]
+    )
+
+    compileOnly "com.alibaba:fastjson:1.2.83"
+    compileOnly "androidx.core:core-ktx:1.10.1"
+    compileOnly "org.jetbrains.kotlin:kotlin-reflect:2.2.0"
+    compileOnly "org.jetbrains.kotlinx:kotlinx-coroutines-core:1.7.3"
+    compileOnly "org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3"
+
+    // 注意：本模块不引入任何第三方 UPnP 库，SSDP/SOAP/XML 全部用 JDK 与 Android 内置类实现，
+    // 避免 jUPnP 那类库在离线SDK工程里带来的 Jetty/servlet 编译风险。
+}
